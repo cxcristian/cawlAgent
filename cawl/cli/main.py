@@ -6,6 +6,7 @@ Modes:
   cawl run --task file.md     # Run task file through plan→execute loop
   cawl run -c "query"         # Single command with tools
   cawl plan --task file.md    # Show plan without executing
+  cawl watch --task file.md   # Re-run task on every file save (Ctrl+C to stop)
   cawl init [--project PATH]  # Initialize .cawl in a project
   cawl pull                   # Download configured model via Ollama
   cawl status                 # Check Ollama connection and model
@@ -102,15 +103,16 @@ def build_system_prompt(project_root: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 BANNER = f"""
-{Fore.CYAN}{Style.BRIGHT}    ██████╗ █████╗ ██╗    ██╗██╗     
-{Fore.CYAN}{Style.BRIGHT}   ██╔════╝██╔══██╗██║    ██║██║     
-{Fore.MAGENTA}{Style.BRIGHT}   ██║     ███████║██║ █╗ ██║██║     
-{Fore.MAGENTA}{Style.BRIGHT}   ██║     ██╔══██║██║███╗██║██║     
-{Fore.CYAN}{Style.BRIGHT}   ╚██████╗██║  ██║╚███╔███╔╝███████╗
-{Fore.CYAN}{Style.BRIGHT}    ╚═════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝
+{Fore.LIGHTRED_EX}{Style.BRIGHT}
+{Fore.LIGHTRED_EX}{Style.BRIGHT}   ██████╗ █████╗ ██╗    ██╗██╗
+{Fore.LIGHTRED_EX}{Style.BRIGHT}  ██╔════╝██╔══██╗██║    ██║██║
+{Fore.LIGHTRED_EX}{Style.BRIGHT}  ██║     ███████║██║ █╗ ██║██║
+{Fore.LIGHTRED_EX}{Style.BRIGHT}  ██║     ██╔══██║██║███╗██║██║
+{Fore.LIGHTRED_EX}{Style.BRIGHT}  ╚██████╗██║  ██║╚███╔███╔╝███████╗
+{Fore.LIGHTRED_EX}{Style.BRIGHT}   ╚═════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝
 {Style.RESET_ALL}
-{Fore.WHITE}{Style.DIM}    Control & Action Web Loop | v0.2.0
-    Archimagos Dominus Belisarius Cawl
+{Fore.LIGHTRED_EX}{Style.BRIGHT}    Control & Action Web Loop | v0.3.0
+{Fore.LIGHTRED_EX}{Style.BRIGHT}    Archimagos Dominus Belisarius Cawl
 """
 
 HELP_TEXT = f"""
@@ -132,6 +134,11 @@ class CawlAgent:
     """Main agent class for interactive REPL and single-command modes."""
 
     MAX_TOOL_ITERATIONS = 20
+    # Soft token budget for chat_history before trimming.
+    # Estimated at ~4 chars/token. Keeps well under qwen2.5's 8k context.
+    MAX_HISTORY_CHARS = 12_000
+    # Minimum turns to always keep (user+assistant pairs at the tail)
+    MIN_HISTORY_TURNS = 4
 
     def __init__(
         self,
@@ -175,6 +182,57 @@ class CawlAgent:
         except ConnectionError as e:
             return f"Ollama: NOT CONNECTED\n{e}"
 
+    def _trim_history(self) -> None:
+        """
+        Trim chat_history when total character count exceeds MAX_HISTORY_CHARS.
+
+        Strategy: drop the oldest user+assistant pairs (always in pairs to keep
+        conversation structure valid) while preserving the MIN_HISTORY_TURNS most
+        recent pairs.  A [CONTEXT TRIMMED] notice is injected so the model knows
+        some earlier context was removed.
+        """
+        total = sum(len(m["content"]) for m in self.chat_history)
+        if total <= self.MAX_HISTORY_CHARS:
+            return
+
+        # Work with pairs: [(user_msg, assistant_msg), ...]
+        # Odd-length histories (e.g. last turn not yet replied) are handled safely.
+        pairs: list[list[dict]] = []
+        buf: list[dict] = []
+        for msg in self.chat_history:
+            buf.append(msg)
+            if msg["role"] == "assistant":
+                pairs.append(buf)
+                buf = []
+        tail_singles = buf  # unpaired tail (current user message)
+
+        # Always keep MIN_HISTORY_TURNS pairs at the tail
+        keep_pairs = pairs[-self.MIN_HISTORY_TURNS:]
+        drop_pairs = pairs[: len(pairs) - self.MIN_HISTORY_TURNS]
+
+        if not drop_pairs:
+            # Nothing left to trim — history is already minimal
+            return
+
+        notice = {
+            "role": "user",
+            "content": (
+                "[CONTEXT TRIMMED: parte del historial anterior fue eliminado "
+                "para mantener el contexto dentro del límite del modelo.]"
+            ),
+        }
+        trimmed: list[dict] = [notice]
+        for pair in keep_pairs:
+            trimmed.extend(pair)
+        trimmed.extend(tail_singles)
+        self.chat_history = trimmed
+        trimmed_chars = sum(len(m["content"]) for pair in drop_pairs for m in pair)
+        print(
+            f"{Fore.YELLOW}[TRIM]{Fore.RESET} "
+            f"Historial comprimido: {trimmed_chars} chars eliminados, "
+            f"{len(keep_pairs)} turnos conservados."
+        )
+
     def chat_with_tools_loop(self, message: str) -> str:
         """
         Send a chat message with tool support and execute the tool loop.
@@ -183,6 +241,7 @@ class CawlAgent:
         execute, and feed results back until a final text response is produced.
         """
         self.chat_history.append({"role": "user", "content": message})
+        self._trim_history()
 
         messages = [{"role": "system", "content": self.system_prompt}]
         messages.extend(self.chat_history[:-1])
@@ -397,6 +456,68 @@ def cmd_pull(args):
         print(f"{Fore.RED}[ERROR]{Fore.RESET} Failed to pull model: {e}")
 
 
+def cmd_watch(args):
+    """
+    Watch a task .md file and re-run it automatically on every save.
+
+    Uses polling (os.path.getmtime) — no extra dependencies needed.
+    Press Ctrl+C to stop.
+    """
+    import time
+
+    if not args.task:
+        print("Error: --task is required for 'watch' command.")
+        sys.exit(1)
+
+    task_path = os.path.abspath(args.task)
+    if not os.path.exists(task_path):
+        print(f"{Fore.RED}[ERROR]{Fore.RESET} Task file not found: {task_path}")
+        sys.exit(1)
+
+    config = get_config()
+    model = args.model or config.get("executor.model", DEFAULT_MODEL)
+    project_path = os.path.abspath(args.project or os.getcwd())
+    poll_interval = getattr(args, "interval", 2)
+
+    print(f"{Fore.CYAN}[WATCH]{Fore.RESET} Watching: {task_path}")
+    print(f"{Fore.CYAN}[WATCH]{Fore.RESET} Poll interval: {poll_interval}s — press Ctrl+C to stop.\n")
+
+    last_mtime: float = 0.0
+
+    try:
+        while True:
+            try:
+                current_mtime = os.path.getmtime(task_path)
+            except OSError:
+                print(f"{Fore.RED}[WATCH ERROR]{Fore.RESET} Cannot stat {task_path}. Retrying...")
+                time.sleep(poll_interval)
+                continue
+
+            if current_mtime != last_mtime:
+                if last_mtime != 0.0:
+                    print(
+                        f"\n{Fore.YELLOW}[WATCH]{Fore.RESET} "
+                        f"Change detected — re-running task..."
+                    )
+                last_mtime = current_mtime
+                try:
+                    run_loop(
+                        task_file=task_path,
+                        project_path=project_path,
+                    )
+                    print(
+                        f"\n{Fore.GREEN}[WATCH]{Fore.RESET} "
+                        f"Run complete. Waiting for next change..."
+                    )
+                except Exception as e:
+                    print(f"{Fore.RED}[WATCH ERROR]{Fore.RESET} Run failed: {e}")
+
+            time.sleep(poll_interval)
+
+    except KeyboardInterrupt:
+        print(f"\n{Fore.CYAN}[WATCH]{Fore.RESET} Stopped.")
+
+
 def cmd_status(args):
     """Check Ollama connection and model status."""
     config = get_config()
@@ -464,6 +585,17 @@ def main():
     # status
     status_parser = subparsers.add_parser("status", help="Check Ollama connection and model")
     status_parser.set_defaults(func=cmd_status)
+
+    # watch
+    watch_parser = subparsers.add_parser("watch", help="Re-run task on every file save (Ctrl+C to stop)")
+    watch_parser.add_argument("--task", required=True, help="Path to task .md file to watch")
+    watch_parser.add_argument("--project", type=str, default=None,
+                              help="Project directory (default: cwd)")
+    watch_parser.add_argument("--model", type=str, default=None,
+                              help="Ollama model to use (default from config.yaml)")
+    watch_parser.add_argument("--interval", type=float, default=2.0,
+                              help="Polling interval in seconds (default: 2)")
+    watch_parser.set_defaults(func=cmd_watch)
 
     # ui
     ui_parser = subparsers.add_parser("ui", help="Launch graphical chat interface")
