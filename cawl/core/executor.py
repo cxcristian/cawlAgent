@@ -35,7 +35,7 @@ def reset_always_run() -> None:
     _always_run = False
 
 
-def execute_step(step: dict) -> dict:
+def execute_step(step: dict, previous_results: list = None) -> dict:
     """
     Execute a single plan step using LLM to decide on the action.
 
@@ -44,6 +44,7 @@ def execute_step(step: dict) -> dict:
 
     Args:
         step: Dict with 'id', 'task', and optionally 'tools'.
+        previous_results: List of results from previous steps (for context).
 
     Returns:
         Dict with 'action', 'tool', 'input', 'output'.
@@ -64,8 +65,21 @@ def execute_step(step: dict) -> dict:
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Step Task: {step.get('task')}"},
     ]
+    
+    # Include previous results as context
+    if previous_results:
+        context_text = "PREVIOUS STEPS RESULTS:\n"
+        for i, res in enumerate(previous_results):
+            action = res.get("action", "unknown")
+            output = res.get("output", "")[:500]  # Truncate for context size
+            context_text += f"\n--- Step {i + 1}: {action} ---\n{output}\n"
+        messages.append({
+            "role": "user",
+            "content": context_text
+        })
+    
+    messages.append({"role": "user", "content": f"Step Task: {step.get('task')}"})
 
     res: dict = {}
     last_error: Exception = None

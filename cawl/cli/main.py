@@ -470,12 +470,12 @@ def cmd_run(args):
     except Exception:
         print(f"{Fore.RED}[ERROR]{Fore.RESET} Ollama not found or not running.")
 
-    # Single command mode
-    if args.command:
+    # Single query mode
+    if hasattr(args, 'query') and args.query:
         agent = CawlAgent(model=model, project_root=project_path)
         if not agent.initialize():
             sys.exit(1)
-        result = agent.chat_with_tools_loop(args.command)
+        result = agent.chat_with_tools_loop(args.query)
         print(result)
         return
 
@@ -483,7 +483,12 @@ def cmd_run(args):
     if args.task:
         print(BANNER)
         print(f"{Fore.YELLOW}[PLANNING]{Fore.RESET} Project: {project_path}")
-        run_loop(task_file=args.task, project_path=project_path)
+        try:
+            run_loop(task_file=args.task, project_path=project_path)
+        except Exception as e:
+            print(f"{Fore.RED}[ERROR]{Fore.RESET} Task execution failed: {e}")
+            import traceback
+            traceback.print_exc()
         return
 
     # Default: REPL
@@ -696,7 +701,7 @@ def main():
 
     # run
     run_parser = subparsers.add_parser("run", help="Run a task or start REPL")
-    run_parser.add_argument("-c", "--command", type=str, default=None,
+    run_parser.add_argument("-c", "--query", type=str, default=None, dest="query",
                             help="Single query/command to run and exit")
     run_parser.add_argument("--task", type=str, default=None,
                             help="Path to task .md file (plan→execute loop)")
