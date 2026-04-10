@@ -35,7 +35,7 @@ def reset_always_run() -> None:
     _always_run = False
 
 
-def execute_step(step: dict, previous_results: list = None) -> dict:
+def execute_step(step: dict, task_text: str = None, previous_results: list = None) -> dict:
     """
     Execute a single plan step using LLM to decide on the action.
 
@@ -44,6 +44,7 @@ def execute_step(step: dict, previous_results: list = None) -> dict:
 
     Args:
         step: Dict with 'id', 'task', and optionally 'tools'.
+        task_text: Full original task description for context.
         previous_results: List of results from previous steps (for context).
 
     Returns:
@@ -66,19 +67,32 @@ def execute_step(step: dict, previous_results: list = None) -> dict:
     messages = [
         {"role": "system", "content": system_prompt},
     ]
-    
-    # Include previous results as context
-    if previous_results:
-        context_text = "PREVIOUS STEPS RESULTS:\n"
-        for i, res in enumerate(previous_results):
-            action = res.get("action", "unknown")
-            output = res.get("output", "")[:500]  # Truncate for context size
-            context_text += f"\n--- Step {i + 1}: {action} ---\n{output}\n"
+
+    if task_text:
         messages.append({
             "role": "user",
-            "content": context_text
+            "content": (
+                "Original task description for context:\n"
+                f"{task_text.strip()}\n\n"
+                "Use this context when producing the result."
+            ),
         })
-    
+
+    if previous_results:
+        context_lines = ["PREVIOUS STEPS RESULTS:"]
+        for i, res in enumerate(previous_results, start=1):
+            action = res.get("action", "unknown")
+            tool = res.get("tool", "<none>")
+            tool_input = res.get("input", {})
+            output = str(res.get("output", ""))[:500]
+            context_lines.append(
+                f"Step {i}: action={action}, tool={tool}, input={tool_input}, output={output}"
+            )
+        messages.append({
+            "role": "user",
+            "content": "\n".join(context_lines),
+        })
+
     messages.append({"role": "user", "content": f"Step Task: {step.get('task')}"})
 
     res: dict = {}
