@@ -2,9 +2,22 @@
 
 import subprocess
 
+# Default timeout in seconds for run_command.
+# Can be overridden per call. Prevents hung processes from blocking the agent.
+DEFAULT_COMMAND_TIMEOUT = 60
 
-def run_command(command: str) -> str:
-    """Execute a system command in the terminal and return output."""
+
+def run_command(command: str, timeout: int = DEFAULT_COMMAND_TIMEOUT) -> str:
+    """
+    Execute a system command in the terminal and return output.
+
+    Args:
+        command: Shell command string to execute.
+        timeout: Maximum seconds to wait before killing the process (default: 60).
+
+    Returns:
+        Combined STDOUT/STDERR as string, or an error message.
+    """
     try:
         process = subprocess.Popen(
             command,
@@ -13,7 +26,15 @@ def run_command(command: str) -> str:
             stderr=subprocess.PIPE,
             text=True,
         )
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()  # drain pipes after kill
+            return (
+                f"[TIMEOUT] Command exceeded {timeout}s limit and was killed.\n"
+                f"Command: {command}"
+            )
 
         output = ""
         if stdout:
