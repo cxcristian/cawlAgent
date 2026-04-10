@@ -52,7 +52,7 @@ class OllamaClient:
         except Exception:
             return False
 
-    def generate(self, prompt: str, temperature: float = 0.1, stream: bool = False) -> str:
+    def generate(self, prompt: str, temperature: float = 0.1, stream: bool = False, timeout: int = 300) -> str:
         """Send a prompt to Ollama /api/generate and return the response."""
         payload = {
             "model": self.model,
@@ -65,7 +65,7 @@ class OllamaClient:
         }
         try:
             response = requests.post(
-                f"{self.url}/api/generate", json=payload, timeout=300
+                f"{self.url}/api/generate", json=payload, timeout=timeout
             )
             response.raise_for_status()
             if stream:
@@ -104,6 +104,7 @@ class OllamaClient:
         messages: list[dict],
         temperature: float = 0.1,
         json_format: bool = False,
+        timeout: int = 300,
     ) -> str:
         """
         Send a chat conversation to Ollama /api/chat and return response text.
@@ -112,6 +113,7 @@ class OllamaClient:
             messages: List of message dicts with 'role' and 'content'.
             temperature: Controls randomness.
             json_format: If True, forces Ollama to respond in JSON format.
+            timeout: Request timeout in seconds.
 
         Returns:
             The assistant's response text.
@@ -130,7 +132,7 @@ class OllamaClient:
 
         try:
             response = requests.post(
-                f"{self.url}/api/chat", json=payload, timeout=300
+                f"{self.url}/api/chat", json=payload, timeout=timeout
             )
             response.raise_for_status()
             data = response.json()

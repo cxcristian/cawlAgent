@@ -59,6 +59,7 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
         "You are an AI agent executor. Given a task step, decide whether to call a tool "
         "or provide a final answer.\n"
         f"Available tools:\n{TOOL_DESCRIPTIONS}\n\n"
+        "If the step explicitly asks to write or create a file, use the write_file tool.\n"
         "If you call a tool, 'input' MUST be a dictionary of arguments.\n"
         "Return ONLY valid JSON — no markdown, no prose — with this exact structure:\n"
         '{"action": "tool_call | final_answer", "tool": "name", "input": {...}, "output": "explanation"}'
@@ -101,7 +102,7 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
     for attempt in range(1 + _MAX_JSON_RETRIES):
         try:
             status.emit("thinking", "Analizando paso...")
-            response_text = client.chat(messages=messages, json_format=True)
+            response_text = client.chat(messages=messages, json_format=True, timeout=600)
             clean = _extract_json(response_text)
             res = json.loads(clean)
 
@@ -136,6 +137,28 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
     action = res.get("action")
     tool_name = res.get("tool") or (action if action in TOOLS else None)
     tool_input = res.get("input")
+
+    def _write_output_file(path: str, content: str) -> dict:
+        func = get_tool("write_file")
+        args_preview = f"{{'path': '{path}', 'content': '<content>'}}"
+        status.emit("tool_call", f"write_file({args_preview})")
+        print(f"  [Action] Calling write_file with output to: {path}")
+        try:
+            result = func(path=path, content=content, mode="write")
+        except Exception as e:
+            status.emit("error", f"write_file lanzó excepción: {e}")
+            return {"action": "error", "tool": "write_file", "input": {"path": path, "content": content}, "output": f"Tool raised: {e}"}
+        preview = str(result)[:100].replace("\n", " ")
+        status.emit("tool_result", f"write_file → {preview}")
+        return {"action": "tool_call", "tool": "write_file", "input": {"path": path, "content": content}, "output": str(result)}
+
+    # If the current step explicitly requires writing to a file and the model returned a final answer,
+    # persist the answer content to the requested file automatically.
+    if action == "final_answer":
+        path_match = re.search(r"(?:write|escribir|crear).*?(?:file|archivo).*?([\w\-./\\]+\.md)", step.get("task", ""), re.IGNORECASE)
+        if path_match:
+            path = path_match.group(1).replace("`", "").strip()
+            return _write_output_file(path, str(res.get("output", "")))
 
     if (action == "tool_call" or action in TOOLS) and tool_name:
         # Require confirmation for run_command unless user approved session-wide
