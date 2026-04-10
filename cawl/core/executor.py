@@ -4,6 +4,7 @@ import json
 import re
 from cawl.tools.registry import get_tool, TOOLS, TOOL_DESCRIPTIONS
 from cawl.core.llm_client import get_llm_client
+from cawl.core.status import status
 from cawl.config.config import get_config
 
 # Session-level flag: user chose "always run" for this execution.
@@ -71,6 +72,7 @@ def execute_step(step: dict) -> dict:
 
     for attempt in range(1 + _MAX_JSON_RETRIES):
         try:
+            status.emit("thinking", "Analizando paso...")
             response_text = client.chat(messages=messages, json_format=True)
             clean = _extract_json(response_text)
             res = json.loads(clean)
@@ -82,6 +84,7 @@ def execute_step(step: dict) -> dict:
         except (json.JSONDecodeError, ValueError) as e:
             last_error = e
             if attempt < _MAX_JSON_RETRIES:
+                status.emit("retry", f"JSON inválido, reintento {attempt + 1}...")
                 print(f"[WARN] Executor attempt {attempt + 1} returned invalid JSON: {e}. Retrying...")
                 messages.append({
                     "role": "user",
@@ -91,12 +94,14 @@ def execute_step(step: dict) -> dict:
                     ),
                 })
             else:
+                status.emit("error", f"Executor fallido tras {1 + _MAX_JSON_RETRIES} intentos")
                 return {
                     "action": "error",
                     "output": f"Executor failed after {1 + _MAX_JSON_RETRIES} attempts: {last_error}",
                 }
 
         except Exception as e:
+            status.emit("error", f"Error en executor: {e}")
             return {"action": "error", "output": f"Executor error: {e}"}
 
     # --- Dispatch the parsed action ---
@@ -120,6 +125,8 @@ def execute_step(step: dict) -> dict:
         if func is None:
             return {"action": "error", "output": f"Tool '{tool_name}' not found."}
 
+        args_preview = str(tool_input)[:80] + ("..." if str(tool_input).__len__() > 80 else "")
+        status.emit("tool_call", f"{tool_name}({args_preview})")
         print(f"  [Action] Calling {tool_name} with input: {tool_input}")
 
         try:
@@ -132,8 +139,11 @@ def execute_step(step: dict) -> dict:
             else:
                 result = func()
         except Exception as e:
+            status.emit("error", f"{tool_name} lanzó excepción: {e}")
             return {"action": "error", "tool": tool_name, "input": tool_input, "output": f"Tool raised: {e}"}
 
+        preview = str(result)[:100].replace("\n", " ")
+        status.emit("tool_result", f"{tool_name} → {preview}")
         return {
             "action": "tool_call",
             "tool": tool_name,

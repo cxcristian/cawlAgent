@@ -5,6 +5,7 @@ from colorama import Fore, Style
 from cawl.tasks.parser import parse_task_file
 from cawl.core.planner import create_plan
 from cawl.core.executor import execute_step
+from cawl.core.status import status
 from cawl.memory.project_memory import ProjectMemory
 
 
@@ -34,7 +35,8 @@ def run_loop(task_file: str = None, task_text: str = None, project_path: str = "
     memory = ProjectMemory(project_path)
     recent_runs = memory.get_recent_runs(limit=5)
 
-    # 3. Generate plan (with memory context so LLM knows what's been done)
+    # 3. Generate plan
+    status.emit("planning", "Generando plan...")
     print(f"{Fore.CYAN}[INFO]{Fore.RESET} Generating plan...")
     plan = create_plan(task_text, memory_context=recent_runs)
     print(f"{Fore.CYAN}[INFO]{Fore.RESET} Plan: {len(plan['steps'])} step(s).")
@@ -43,6 +45,7 @@ def run_loop(task_file: str = None, task_text: str = None, project_path: str = "
     results = []
     for step in plan["steps"]:
         try:
+            status.emit("step", f"Paso {step['id']}: {step['task'][:60]}")
             print(f"\n{Style.BRIGHT}{Fore.BLUE}--- Step {step['id']}: {step['task']} ---")
             result = execute_step(step)
             results.append(result)
@@ -51,10 +54,12 @@ def run_loop(task_file: str = None, task_text: str = None, project_path: str = "
             output = result.get("output", "")
 
             if action == "error":
+                status.emit("error", str(output)[:80])
                 print(f"{Fore.RED}[ERROR]{Fore.RESET} {output}")
             elif action == "skipped":
                 print(f"{Fore.YELLOW}[SKIPPED]{Fore.RESET} {output}")
             else:
+                status.emit("done", f"Paso {step['id']} completado")
                 print(f"{Fore.GREEN}[SUCCESS]{Fore.RESET} {action}: {output}")
 
         except Exception as e:

@@ -3,6 +3,7 @@
 import json
 import re
 from cawl.core.llm_client import get_llm_client
+from cawl.core.status import status
 from cawl.tools.registry import TOOL_DESCRIPTIONS
 
 # Max retries when the model returns invalid JSON
@@ -73,6 +74,8 @@ def create_plan(task_text: str, memory_context: list = None) -> dict:
 
     last_error: Exception = None
 
+    status.emit("planning", "Generando plan de ejecución...")
+
     for attempt in range(1 + _MAX_JSON_RETRIES):
         try:
             response_text = client.chat(messages=messages, json_format=True)
@@ -83,13 +86,14 @@ def create_plan(task_text: str, memory_context: list = None) -> dict:
             if "steps" not in plan or not isinstance(plan["steps"], list):
                 raise ValueError(f"Missing or invalid 'steps' key. Got: {list(plan.keys())}")
 
+            status.emit("planning", f"Plan listo: {len(plan['steps'])} paso(s)")
             return plan
 
         except (json.JSONDecodeError, ValueError) as e:
             last_error = e
             if attempt < _MAX_JSON_RETRIES:
+                status.emit("retry", f"JSON inválido en intento {attempt + 1}, reintentando...")
                 print(f"[WARN] Plan attempt {attempt + 1} returned invalid JSON: {e}. Retrying...")
-                # Feed the error back so the model can self-correct
                 messages.append({
                     "role": "user",
                     "content": (
@@ -98,6 +102,7 @@ def create_plan(task_text: str, memory_context: list = None) -> dict:
                     ),
                 })
             else:
+                status.emit("error", f"Plan fallido tras {1 + _MAX_JSON_RETRIES} intentos")
                 print(
                     f"[WARN] All {1 + _MAX_JSON_RETRIES} plan attempts failed ({last_error}). "
                     "Falling back to single-step plan."
@@ -105,6 +110,7 @@ def create_plan(task_text: str, memory_context: list = None) -> dict:
 
         except Exception as e:
             last_error = e
+            status.emit("error", f"Error inesperado en planner: {e}")
             print(f"[WARN] Unexpected error generating plan: {e}. Falling back.")
             break
 
