@@ -366,7 +366,7 @@ ollama pull qwen2.5-coder:7b
 
 ### El agente no utiliza las herramientas correctas
 
-**Solución**: Verifica que el system prompt tenga las descripciones. En `cawl/cli/main.py` se construye dinámicamente. Si cambias herramientas, reinicia.
+ **Solución**: Verifica que el system prompt tenga las descripciones. En `cawl/cli/main.py` se construye dinámicamente. Si cambias herramientas, reinicia.
 
 ### Error: "cawl: command not found"
 

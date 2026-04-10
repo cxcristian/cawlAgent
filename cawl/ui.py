@@ -116,10 +116,11 @@ QTextEdit#inputBox:focus {{
 /* Botones */
 QPushButton#sendBtn {{
     background-color: {ACCENT};
-    color: #0d1117;
-    border: none;
+    color: #fff;
+    border: 1px solid {ACCENT};
     border-radius: 8px;
     font-weight: bold;
+     
     font-size: 13px;
     padding: 0 20px;
     min-width: 80px;
