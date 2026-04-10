@@ -215,6 +215,7 @@ QFrame#inputFrame {{
 class AgentWorker(QThread):
     response_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+    status_update  = pyqtSignal(str, str)   # (event_type, message)
 
     def __init__(self, message: str, history: list, system_prompt: str, model: str):
         super().__init__()
@@ -225,44 +226,63 @@ class AgentWorker(QThread):
 
     def run(self):
         try:
-            # Import aquí para no fallar si cawl no está instalado aún
             from cawl.core.llm_client import OllamaClient
+            from cawl.core.status import status
             from cawl.tools.registry import get_tool
 
-            client = OllamaClient(model=self.model)
+            # Subscribe to status events and forward to UI via Qt signal
+            def _on_status(event_type: str, message: str):
+                self.status_update.emit(event_type, message)
 
-            messages = [{"role": "system", "content": self.system_prompt}]
-            messages.extend(self.history)
-            messages.append({"role": "user", "content": self.message})
+            status.subscribe(_on_status)
 
-            MAX_ITER = 20
-            for _ in range(MAX_ITER):
-                response = client.chat_with_tools(messages=messages, temperature=0.1)
+            try:
+                client = OllamaClient(model=self.model)
 
-                if not response["tool_calls"]:
-                    self.response_ready.emit(response["content"])
-                    return
+                messages = [{"role": "system", "content": self.system_prompt}]
+                messages.extend(self.history)
+                messages.append({"role": "user", "content": self.message})
 
-                for tool_call in response["tool_calls"]:
-                    tool_name = tool_call["name"]
-                    tool_args = tool_call.get("arguments", {})
+                MAX_ITER = 20
+                for _ in range(MAX_ITER):
+                    self.status_update.emit("thinking", "Razonando...")
+                    response = client.chat_with_tools(messages=messages, temperature=0.1)
 
-                    func = get_tool(tool_name)
-                    if func is None:
-                        result_str = f"[ERROR] Unknown tool: {tool_name}"
-                    else:
-                        try:
-                            result = func(**tool_args) if isinstance(tool_args, dict) else func(tool_args)
-                            result_str = str(result)
-                        except Exception as e:
-                            result_str = f"[ERROR] {e}"
+                    if not response["tool_calls"]:
+                        self.response_ready.emit(response["content"])
+                        return
 
-                    messages.append({
-                        "role": "user",
-                        "content": f"RESULTADO de {tool_name}: {result_str}",
-                    })
+                    for tool_call in response["tool_calls"]:
+                        tool_name = tool_call["name"]
+                        tool_args = tool_call.get("arguments", {})
 
-            self.response_ready.emit("[INFO] Máximo de iteraciones alcanzado.")
+                        self.status_update.emit(
+                            "tool_call",
+                            f"{tool_name}({str(tool_args)[:60]})"
+                        )
+
+                        func = get_tool(tool_name)
+                        if func is None:
+                            result_str = f"[ERROR] Unknown tool: {tool_name}"
+                        else:
+                            try:
+                                result = func(**tool_args) if isinstance(tool_args, dict) else func(tool_args)
+                                result_str = str(result)
+                                preview = result_str[:80].replace("\n", " ")
+                                self.status_update.emit("tool_result", f"{tool_name} → {preview}")
+                            except Exception as e:
+                                result_str = f"[ERROR] {e}"
+                                self.status_update.emit("error", str(e)[:80])
+
+                        messages.append({
+                            "role": "user",
+                            "content": f"RESULTADO de {tool_name}: {result_str}",
+                        })
+
+                self.response_ready.emit("[INFO] Máximo de iteraciones alcanzado.")
+
+            finally:
+                status.unsubscribe(_on_status)
 
         except ImportError:
             self.error_occurred.emit(
@@ -271,6 +291,90 @@ class AgentWorker(QThread):
             )
         except Exception as e:
             self.error_occurred.emit(str(e))
+
+
+# ---------------------------------------------------------------------------
+# Burbuja de status (indicador de progreso en la UI)
+# ---------------------------------------------------------------------------
+
+class StatusBubble(QWidget):
+    """
+    Burbuja animada que muestra el estado actual del agente.
+    Se actualiza en tiempo real vía señal Qt desde AgentWorker.
+    """
+
+    ICONS = {
+        "thinking":    ("Razonando",     WARN),
+        "planning":    ("Planificando",  ACCENT),
+        "tool_call":   ("Herramienta",   "#c678dd"),
+        "tool_result": ("Resultado",     ACCENT2),
+        "step":        ("Paso",          ACCENT),
+        "retry":       ("Reintentando",  WARN),
+        "trim":        ("Comprimiendo",  WARN),
+        "done":        ("Listo",         ACCENT2),
+        "error":       ("Error",         DANGER),
+        "agent":       ("Agente",        ACCENT),
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._dots = 0
+
+    def _build(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 6, 16, 6)
+        layout.setSpacing(8)
+
+        self._icon_lbl = QLabel("○")
+        self._icon_lbl.setStyleSheet(f"color: {WARN}; font-size: 13px; font-weight: bold;")
+        self._icon_lbl.setFixedWidth(20)
+
+        self._type_lbl = QLabel("Procesando")
+        self._type_lbl.setStyleSheet(f"color: {WARN}; font-size: 11px; font-weight: bold; min-width: 80px;")
+
+        self._msg_lbl = QLabel("Esperando respuesta...")
+        self._msg_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        self._msg_lbl.setWordWrap(False)
+
+        self._dots_lbl = QLabel("")
+        self._dots_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; min-width: 24px;")
+
+        layout.addWidget(self._icon_lbl)
+        layout.addWidget(self._type_lbl)
+        layout.addWidget(self._msg_lbl, 1)
+        layout.addWidget(self._dots_lbl)
+
+        self.setStyleSheet(f"""
+            StatusBubble {{
+                background-color: {BG_BUBBLE_AI};
+                border: 1px solid #1f6feb;
+                border-radius: 8px;
+            }}
+        """)
+
+    def update_status(self, event_type: str, message: str):
+        label, color = self.ICONS.get(event_type, ("Procesando", WARN))
+        self._icon_lbl.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
+        self._type_lbl.setText(label)
+        self._type_lbl.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold; min-width: 80px;")
+        # Truncate message
+        display = message[:70] + ("..." if len(message) > 70 else "")
+        self._msg_lbl.setText(display)
+
+    def start_animation(self):
+        self._dots = 0
+        self._timer.start(400)
+
+    def stop_animation(self):
+        self._timer.stop()
+        self._dots_lbl.setText("")
+
+    def _tick(self):
+        self._dots = (self._dots + 1) % 4
+        self._dots_lbl.setText("." * self._dots)
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +760,7 @@ class CawlWindow(QMainWindow):
         self.chat_history.append({"role": "user", "content": text})
 
         self._set_thinking(True)
+        self._show_status_bubble()
 
         self.worker = AgentWorker(
             message=text,
@@ -665,15 +770,43 @@ class CawlWindow(QMainWindow):
         )
         self.worker.response_ready.connect(self._on_response)
         self.worker.error_occurred.connect(self._on_error)
+        self.worker.status_update.connect(self._on_status_update)
         self.worker.start()
 
+    def _show_status_bubble(self):
+        """Insert an animated status bubble into the chat panel."""
+        self._status_bubble = StatusBubble()
+        self._status_bubble.start_animation()
+        # Insert before the stretch at the end
+        self.chat_panel._layout.insertWidget(
+            self.chat_panel._layout.count() - 1,
+            self._status_bubble
+        )
+        self._scroll_to_bottom()
+
+    def _hide_status_bubble(self):
+        """Remove the status bubble from the chat panel."""
+        if hasattr(self, "_status_bubble") and self._status_bubble:
+            self._status_bubble.stop_animation()
+            self._status_bubble.setParent(None)
+            self._status_bubble.deleteLater()
+            self._status_bubble = None
+
+    def _on_status_update(self, event_type: str, message: str):
+        """Forward status events to the StatusBubble widget."""
+        if hasattr(self, "_status_bubble") and self._status_bubble:
+            self._status_bubble.update_status(event_type, message)
+            self._scroll_to_bottom()
+
     def _on_response(self, text: str):
+        self._hide_status_bubble()
         self.chat_history.append({"role": "assistant", "content": text})
         self.chat_panel.add_message(text, "assistant")
         self._scroll_to_bottom()
         self._set_thinking(False)
 
     def _on_error(self, error: str):
+        self._hide_status_bubble()
         self.chat_panel.add_message(f"⚠ Error: {error}", "system")
         self._scroll_to_bottom()
         self._set_thinking(False)
