@@ -11,6 +11,7 @@ setup(
         "pyyaml",
         "requests",
         "colorama",
+        "PyQt5>=5.15.0",
     ],
     entry_points={
         "console_scripts": [

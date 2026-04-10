@@ -405,6 +405,21 @@ def cmd_status(args):
     print(agent.get_status())
 
 
+def cmd_ui(args):
+    """Launch the graphical UI."""
+    try:
+        from cawl.ui import launch_ui
+    except ImportError as e:
+        print(f"[ERROR] No se pudo cargar la UI: {e}")
+        print("Asegúrate de tener PyQt5 instalado: pip install -e .")
+        sys.exit(1)
+
+    project_path = os.path.abspath(args.project or os.getcwd())
+    config = get_config()
+    model = args.model or config.get("executor.model", DEFAULT_MODEL)
+    launch_ui(project_path=project_path, model=model)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -476,18 +491,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-def cmd_ui(args):
-    """Launch the graphical UI."""
-    try:
-        from cawl.ui import launch_ui
-    except ImportError as e:
-        print(f"[ERROR] No se pudo cargar la UI: {e}")
-        print("Asegúrate de tener PyQt5 instalado: pip install PyQt5")
-        sys.exit(1)
-
-    project_path = os.path.abspath(args.project or os.getcwd())
-    config = get_config()
-    model = args.model or config.get("executor.model", DEFAULT_MODEL)
-    launch_ui(project_path=project_path, model=model)
