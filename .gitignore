@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# CAWL local memory
+.cawl/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LLM models or temporary files
+.qwen/
+/tmp/
+hello_cawl.txt

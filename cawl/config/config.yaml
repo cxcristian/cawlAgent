@@ -1,0 +1,10 @@
+executor:
+  model: "qwen2.5-coder:7b"
+  confirm_commands: true
+
+planner:
+  model: "qwen2.5-coder:7b"
+
+paths:
+  base: "."
+  memory: ".cawl"
