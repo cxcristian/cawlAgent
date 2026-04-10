@@ -85,7 +85,7 @@ class TerminalSpinner:
                 event = self._current_event
                 msg = self._current_msg
             icon = self.ICONS.get(event, f"{Fore.WHITE}○{Style.RESET_ALL}")
-            frame = f"{Fore.DIM}{self.FRAMES[frame_idx % len(self.FRAMES)]}{Style.RESET_ALL}"
+            frame = f"{Style.DIM}{self.FRAMES[frame_idx % len(self.FRAMES)]}{Style.RESET_ALL}"
             # Truncate message to fit terminal width
             display = msg[:60] + ("..." if len(msg) > 60 else "")
             line = f"  {frame} {icon}  {display}"
@@ -513,7 +513,7 @@ def cmd_plan(args):
     for step in plan["steps"]:
         tools_str = ", ".join(step.get("tools", [])) or "none"
         print(f"  {Fore.BLUE}Step {step['id']}:{Style.RESET_ALL} {step['task']}  "
-              f"{Fore.DIM}[tools: {tools_str}]{Style.RESET_ALL}")
+              f"{Style.DIM}[tools: {tools_str}]{Style.RESET_ALL}")
     print()
 
 
