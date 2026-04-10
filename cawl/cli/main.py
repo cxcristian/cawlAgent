@@ -2,14 +2,16 @@
 CAWL CLI - Command-line interface for the Cawl agent.
 
 Modes:
-  cawl run                    # Interactive REPL (default)
-  cawl run --task file.md     # Run task file through plan→execute loop
-  cawl run -c "query"         # Single command with tools
-  cawl plan --task file.md    # Show plan without executing
-  cawl watch --task file.md   # Re-run task on every file save (Ctrl+C to stop)
-  cawl init [--project PATH]  # Initialize .cawl in a project
-  cawl pull                   # Download configured model via Ollama
-  cawl status                 # Check Ollama connection and model
+  cawl run                         # Interactive REPL (default)
+  cawl run --task file.md          # Run task file through plan→execute loop
+  cawl run -c "query"              # Single command with tools
+  cawl plan --task file.md         # Show plan without executing
+  cawl multi -c "tarea"            # Multi-agent orchestration
+  cawl multi -c "tarea" --workers coder,reviewer --parallel
+  cawl watch --task file.md        # Re-run task on every file save
+  cawl init [--project PATH]       # Initialize .cawl in a project
+  cawl pull                        # Download configured model via Ollama
+  cawl status                      # Check Ollama connection and model
 """
 
 import argparse
@@ -17,6 +19,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from typing import Optional
 
 from colorama import init, Fore, Style
@@ -24,11 +28,87 @@ from colorama import init, Fore, Style
 from cawl.config.config import get_config
 from cawl.core.llm_client import OllamaClient, DEFAULT_MODEL
 from cawl.core.loop import run_loop
+from cawl.core.status import status
 from cawl.memory.project_memory import ProjectMemory
 from cawl.tasks.parser import parse_task_file
 from cawl.tools.registry import TOOLS, TOOL_DESCRIPTIONS, get_tool
 
 init(autoreset=True)
+
+
+# ---------------------------------------------------------------------------
+# Terminal spinner — suscriptor de status para el REPL
+# ---------------------------------------------------------------------------
+
+class TerminalSpinner:
+    """
+    Muestra un spinner animado en la terminal mientras el agente trabaja.
+    Se suscribe al StatusEmitter y actualiza el mensaje en tiempo real.
+
+    Uso:
+        spinner = TerminalSpinner()
+        spinner.start()
+        # ... agente trabaja ...
+        spinner.stop()
+    """
+
+    FRAMES = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"]
+    ICONS = {
+        "thinking":    f"{Fore.YELLOW}○{Style.RESET_ALL}",
+        "planning":    f"{Fore.CYAN}▦{Style.RESET_ALL}",
+        "tool_call":   f"{Fore.MAGENTA}►{Style.RESET_ALL}",
+        "tool_result": f"{Fore.GREEN}✓{Style.RESET_ALL}",
+        "step":        f"{Fore.BLUE}●{Style.RESET_ALL}",
+        "retry":       f"{Fore.YELLOW}↺{Style.RESET_ALL}",
+        "trim":        f"{Fore.YELLOW}✂{Style.RESET_ALL}",
+        "done":        f"{Fore.GREEN}✔{Style.RESET_ALL}",
+        "error":       f"{Fore.RED}✘{Style.RESET_ALL}",
+        "agent":       f"{Fore.CYAN}◆{Style.RESET_ALL}",
+    }
+
+    def __init__(self):
+        self._active = False
+        self._thread: threading.Thread = None
+        self._current_msg = "Procesando..."
+        self._current_event = "thinking"
+        self._lock = threading.Lock()
+
+    def _on_status(self, event_type: str, message: str):
+        with self._lock:
+            self._current_event = event_type
+            self._current_msg = message
+
+    def _spin(self):
+        frame_idx = 0
+        while self._active:
+            with self._lock:
+                event = self._current_event
+                msg = self._current_msg
+            icon = self.ICONS.get(event, f"{Fore.WHITE}○{Style.RESET_ALL}")
+            frame = f"{Fore.DIM}{self.FRAMES[frame_idx % len(self.FRAMES)]}{Style.RESET_ALL}"
+            # Truncate message to fit terminal width
+            display = msg[:60] + ("..." if len(msg) > 60 else "")
+            line = f"  {frame} {icon}  {display}"
+            # \r overwrite same line, pad with spaces to clear previous content
+            sys.stdout.write(f"\r{line:<80}")
+            sys.stdout.flush()
+            frame_idx += 1
+            time.sleep(0.08)
+
+    def start(self):
+        self._active = True
+        status.subscribe(self._on_status)
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._active = False
+        status.unsubscribe(self._on_status)
+        if self._thread:
+            self._thread.join(timeout=0.5)
+        # Clear spinner line
+        sys.stdout.write(f"\r{' ' * 82}\r")
+        sys.stdout.flush()
 
 # ---------------------------------------------------------------------------
 # System prompt (Cawl persona — arcaico, español, preciso)
@@ -341,9 +421,13 @@ class CawlAgent:
                 continue
 
             try:
+                spinner = TerminalSpinner()
+                spinner.start()
                 response = self.chat_with_tools_loop(user_input)
+                spinner.stop()
                 print(f"\n{response}\n")
             except Exception as e:
+                spinner.stop()
                 print(f"{Fore.RED}[ERROR]{Fore.RESET} {e}")
 
     def _handle_command(self, command: str) -> None:
@@ -454,6 +538,63 @@ def cmd_pull(args):
         print(f"{Fore.GREEN}[SUCCESS]{Fore.RESET} Model {model} is ready.")
     except Exception as e:
         print(f"{Fore.RED}[ERROR]{Fore.RESET} Failed to pull model: {e}")
+
+
+def cmd_multi(args):
+    """
+    Run a task using the multi-agent orchestrator.
+
+    Examples:
+        cawl multi -c "Analiza src/, escribe tests y genera README"
+        cawl multi -c "..." --workers coder,reviewer,documenter
+        cawl multi -c "..." --parallel
+    """
+    from cawl.core.multi_agent import OrchestratorAgent, WorkerAgent
+
+    config = get_config()
+    model = args.model or config.get("executor.model", DEFAULT_MODEL)
+    project_path = os.path.abspath(args.project or os.getcwd())
+
+    # Build workers from --workers flag (comma-separated role names)
+    workers = None
+    if args.workers:
+        role_names = [r.strip() for r in args.workers.split(",") if r.strip()]
+        workers = [
+            WorkerAgent(role=role, project_path=project_path)
+            for role in role_names
+        ]
+        print(
+            f"{Fore.CYAN}[MULTI]{Fore.RESET} "
+            f"Workers: {', '.join(w.role for w in workers)}"
+        )
+
+    orchestrator = OrchestratorAgent(
+        model=model,
+        workers=workers,
+        project_path=project_path,
+        parallel=args.parallel,
+    )
+
+    task = args.command
+    if not task:
+        print("Error: -c / --command es requerido para 'multi'.")
+        sys.exit(1)
+
+    print(BANNER)
+    print(
+        f"{Fore.CYAN}[MULTI]{Fore.RESET} Modo: "
+        f"{'paralelo' if args.parallel else 'secuencial'}  "
+        f"| Proyecto: {project_path}\n"
+    )
+
+    spinner = TerminalSpinner()
+    spinner.start()
+    try:
+        result = orchestrator.run(task)
+    finally:
+        spinner.stop()
+
+    print(f"\n{result}\n")
 
 
 def cmd_watch(args):
@@ -585,6 +726,20 @@ def main():
     # status
     status_parser = subparsers.add_parser("status", help="Check Ollama connection and model")
     status_parser.set_defaults(func=cmd_status)
+
+    # multi
+    multi_parser = subparsers.add_parser("multi", help="Run a task with multi-agent orchestration")
+    multi_parser.add_argument("-c", "--command", type=str, required=True,
+                              help="Task to execute with multiple agents")
+    multi_parser.add_argument("--workers", type=str, default=None,
+                              help="Comma-separated worker roles (e.g. coder,reviewer,documenter)")
+    multi_parser.add_argument("--project", type=str, default=None,
+                              help="Project directory (default: cwd)")
+    multi_parser.add_argument("--model", type=str, default=None,
+                              help="Ollama model (default from config.yaml)")
+    multi_parser.add_argument("--parallel", action="store_true", default=False,
+                              help="Run independent subtasks in parallel threads")
+    multi_parser.set_defaults(func=cmd_multi)
 
     # watch
     watch_parser = subparsers.add_parser("watch", help="Re-run task on every file save (Ctrl+C to stop)")
