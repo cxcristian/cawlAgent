@@ -171,6 +171,7 @@ cawl ui [--project /ruta/al/proyecto] [--model modelo]
 ```
 
 **Características de la GUI**:
+
 - 💬 Chat estilo burbuja con conversación bidireccional
 - 📁 Árbol de archivos del proyecto en el panel izquierdo
 - 🌙 Tema oscuro estilo GitHub Dark
@@ -366,6 +367,46 @@ ollama pull qwen2.5-coder:7b
 ### El agente no utiliza las herramientas correctas
 
 **Solución**: Verifica que el system prompt tenga las descripciones. En `cawl/cli/main.py` se construye dinámicamente. Si cambias herramientas, reinicia.
+
+### Error: "cawl: command not found"
+
+Si después de `pip install -e .` obtienes este error, el directorio Scripts de Python no está en tu PATH.
+
+**Solución paso a paso:**
+
+1. **Encuentra la ruta de Scripts:**
+
+   ```bash
+   python -c "import sys; import os; print(os.path.join(sys.prefix, 'Scripts'))"
+   ```
+
+   Esto te dará algo como: `C:\Users\TuUsuario\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\Scripts`
+
+2. **Agrega al PATH del sistema:**
+   - Presiona `Win + R`, escribe `sysdm.cpl` y presiona Enter
+   - Ve a la pestaña "Opciones avanzadas" → "Variables de entorno"
+   - En "Variables del sistema", selecciona "Path" y haz clic en "Editar"
+   - Haz clic en "Nuevo" y pega la ruta del paso 1
+   - Haz clic en "Aceptar" en todas las ventanas
+
+3. **Reinicia la terminal:**
+   - Cierra completamente bash/cmd
+   - Abre una nueva terminal
+   - Prueba: `cawl status`
+
+**Alternativa temporal (por sesión):**
+
+```bash
+export PATH="$PATH:$(python -c "import sys; import os; print(os.path.join(sys.prefix, 'Scripts'))")"
+cawl status
+```
+
+**Verificación:**
+
+```bash
+cawl status
+# Debería mostrar: Ollama: Connected, Model: qwen2.5-coder:7b, Available: Yes
+```
 
 ---
 
