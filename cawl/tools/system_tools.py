@@ -2,22 +2,29 @@
 
 import subprocess
 
-# Default timeout in seconds for run_command.
-# Can be overridden per call. Prevents hung processes from blocking the agent.
-DEFAULT_COMMAND_TIMEOUT = 60
+
+def _get_default_timeout() -> int:
+    """Get configurable default timeout, defaulting to 60s."""
+    try:
+        from cawl.config.config import get_config
+        return get_config().get("executor.command_timeout", 60)
+    except Exception:
+        return 60
 
 
-def run_command(command: str, timeout: int = DEFAULT_COMMAND_TIMEOUT) -> str:
+def run_command(command: str, timeout: int = None) -> str:
     """
     Execute a system command in the terminal and return output.
 
     Args:
         command: Shell command string to execute.
-        timeout: Maximum seconds to wait before killing the process (default: 60).
+        timeout: Maximum seconds to wait before killing the process (default: from config, fallback 60).
 
     Returns:
         Combined STDOUT/STDERR as string, or an error message.
     """
+    if timeout is None:
+        timeout = _get_default_timeout()
     try:
         process = subprocess.Popen(
             command,

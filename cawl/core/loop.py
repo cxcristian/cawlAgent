@@ -48,6 +48,8 @@ def run_loop(task_file: str = None, task_text: str = None, project_path: str = "
             status.emit("step", f"Paso {step['id']}: {step['task'][:60]}")
             print(f"\n{Style.BRIGHT}{Fore.BLUE}--- Step {step['id']}: {step['task']} ---")
             result = execute_step(step, task_text=task_text, previous_results=results)
+            if isinstance(result, dict):
+                result["step"] = step
             results.append(result)
 
             action = result.get("action", "unknown")

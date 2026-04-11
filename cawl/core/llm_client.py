@@ -105,6 +105,8 @@ class OllamaClient:
         temperature: float = 0.1,
         json_format: bool = False,
         timeout: int = 300,
+        stream: bool = False,
+        stream_callback=None,
     ) -> str:
         """
         Send a chat conversation to Ollama /api/chat and return response text.
@@ -114,6 +116,8 @@ class OllamaClient:
             temperature: Controls randomness.
             json_format: If True, forces Ollama to respond in JSON format.
             timeout: Request timeout in seconds.
+            stream: If True, yield tokens incrementally.
+            stream_callback: Optional callback(chunk: str) called per token in streaming mode.
 
         Returns:
             The assistant's response text.
@@ -121,7 +125,7 @@ class OllamaClient:
         payload = {
             "model": self.model,
             "messages": messages,
-            "stream": False,
+            "stream": stream,
             "options": {
                 "temperature": temperature,
                 "num_predict": 8192,
@@ -132,9 +136,13 @@ class OllamaClient:
 
         try:
             response = requests.post(
-                f"{self.url}/api/chat", json=payload, timeout=timeout
+                f"{self.url}/api/chat", json=payload, timeout=timeout, stream=stream
             )
             response.raise_for_status()
+
+            if stream:
+                return self._handle_chat_streaming(response, callback=stream_callback)
+
             data = response.json()
             return data.get("message", {}).get("content", "").strip()
         except requests.exceptions.Timeout:
@@ -143,6 +151,24 @@ class OllamaClient:
             raise RuntimeError(f"Ollama chat request failed: {e}")
         except (json.JSONDecodeError, KeyError) as e:
             raise RuntimeError(f"Invalid response from Ollama: {e}")
+
+    def _handle_chat_streaming(self, response: requests.Response, callback=None) -> str:
+        """Handle a streaming response from /api/chat."""
+        full_response = ""
+        for line in response.iter_lines():
+            if line:
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                    if "message" in data and "content" in data["message"]:
+                        chunk = data["message"]["content"]
+                        full_response += chunk
+                        if callback:
+                            callback(chunk)
+                    if data.get("done", False):
+                        break
+                except json.JSONDecodeError:
+                    continue
+        return full_response.strip()
 
     @staticmethod
     def parse_tool_call_from_text(text: str) -> Optional[dict]:
@@ -192,9 +218,17 @@ class OllamaClient:
         self,
         messages: list[dict],
         temperature: float = 0.1,
+        stream: bool = False,
+        stream_callback=None,
     ) -> dict:
         """
         Send a chat conversation and parse any tool calls from the response text.
+
+        Args:
+            messages: Chat message history.
+            temperature: Controls randomness.
+            stream: If True, yield tokens incrementally.
+            stream_callback: Optional callback(chunk: str) called per token.
 
         Returns:
             Dict with 'content' (text) and 'tool_calls' (list of parsed calls).
@@ -202,7 +236,7 @@ class OllamaClient:
         payload = {
             "model": self.model,
             "messages": messages,
-            "stream": False,
+            "stream": stream,
             "options": {
                 "temperature": temperature,
                 "num_predict": 8192,
@@ -210,11 +244,15 @@ class OllamaClient:
         }
         try:
             response = requests.post(
-                f"{self.url}/api/chat", json=payload, timeout=300
+                f"{self.url}/api/chat", json=payload, timeout=300, stream=stream
             )
             response.raise_for_status()
-            data = response.json()
-            raw_text = data.get("message", {}).get("content", "").strip()
+
+            if stream:
+                raw_text = self._handle_chat_streaming(response, callback=stream_callback)
+            else:
+                data = response.json()
+                raw_text = data.get("message", {}).get("content", "").strip()
 
             result = {"content": raw_text, "tool_calls": []}
             tool_call = self.parse_tool_call_from_text(raw_text)

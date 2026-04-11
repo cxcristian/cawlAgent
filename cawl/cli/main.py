@@ -213,13 +213,6 @@ HELP_TEXT = f"""
 class CawlAgent:
     """Main agent class for interactive REPL and single-command modes."""
 
-    MAX_TOOL_ITERATIONS = 20
-    # Soft token budget for chat_history before trimming.
-    # Estimated at ~4 chars/token. Keeps well under qwen2.5's 8k context.
-    MAX_HISTORY_CHARS = 12_000
-    # Minimum turns to always keep (user+assistant pairs at the tail)
-    MIN_HISTORY_TURNS = 4
-
     def __init__(
         self,
         model: str = DEFAULT_MODEL,
@@ -230,6 +223,12 @@ class CawlAgent:
         self.system_prompt = build_system_prompt(self.project_root)
         self.client: Optional[OllamaClient] = None
         self.chat_history: list[dict] = []
+
+        # Load constants from config
+        config = get_config()
+        self.MAX_TOOL_ITERATIONS = config.get("executor.max_tool_iterations", 20)
+        self.MAX_HISTORY_CHARS = config.get("executor.max_history_chars", 12_000)
+        self.MIN_HISTORY_TURNS = config.get("executor.max_history_turns", 4)
 
     def initialize(self) -> bool:
         """Initialize connection to Ollama and verify model."""
@@ -313,12 +312,16 @@ class CawlAgent:
             f"{len(keep_pairs)} turnos conservados."
         )
 
-    def chat_with_tools_loop(self, message: str) -> str:
+    def chat_with_tools_loop(self, message: str, streaming: bool = True) -> str:
         """
         Send a chat message with tool support and execute the tool loop.
 
         The model outputs JSON tool calls in its response text. We detect,
         execute, and feed results back until a final text response is produced.
+
+        Args:
+            message: User message.
+            streaming: If True, stream the response with a spinner showing progress.
         """
         self.chat_history.append({"role": "user", "content": message})
         self._trim_history()
@@ -332,7 +335,20 @@ class CawlAgent:
         while iterations < self.MAX_TOOL_ITERATIONS:
             iterations += 1
 
-            response = self.client.chat_with_tools(messages=messages, temperature=0.1)
+            if streaming:
+                # Streaming: collect chunks into a buffer, display via spinner
+                response_buffer = {"content": ""}
+                def _on_chunk(chunk: str):
+                    response_buffer["content"] += chunk
+                    # Update spinner status with live content preview
+                    preview = response_buffer["content"][-60:].replace("\n", " ")
+                    status.emit("thinking", preview)
+
+                response = self.client.chat_with_tools(
+                    messages=messages, temperature=0.1, stream=True, stream_callback=_on_chunk
+                )
+            else:
+                response = self.client.chat_with_tools(messages=messages, temperature=0.1)
 
             if not response["tool_calls"]:
                 if response["content"]:
@@ -608,8 +624,12 @@ def cmd_watch(args):
 
     Uses polling (os.path.getmtime) — no extra dependencies needed.
     Press Ctrl+C to stop.
+
+    Race condition fix: uses a threading.Lock to prevent overlapping
+    runs if the file changes while a previous run is still executing.
     """
     import time
+    import threading
 
     if not args.task:
         print("Error: --task is required for 'watch' command.")
@@ -629,6 +649,8 @@ def cmd_watch(args):
     print(f"{Fore.CYAN}[WATCH]{Fore.RESET} Poll interval: {poll_interval}s — press Ctrl+C to stop.\n")
 
     last_mtime: float = 0.0
+    _run_lock = threading.Lock()
+    _is_running = False
 
     try:
         while True:
@@ -641,22 +663,37 @@ def cmd_watch(args):
 
             if current_mtime != last_mtime:
                 if last_mtime != 0.0:
-                    print(
-                        f"\n{Fore.YELLOW}[WATCH]{Fore.RESET} "
-                        f"Change detected — re-running task..."
-                    )
-                last_mtime = current_mtime
-                try:
-                    run_loop(
-                        task_file=task_path,
-                        project_path=project_path,
-                    )
-                    print(
-                        f"\n{Fore.GREEN}[WATCH]{Fore.RESET} "
-                        f"Run complete. Waiting for next change..."
-                    )
-                except Exception as e:
-                    print(f"{Fore.RED}[WATCH ERROR]{Fore.RESET} Run failed: {e}")
+                    # Skip if a run is still in progress
+                    if not _run_lock.acquire(blocking=False):
+                        if _is_running:
+                            print(
+                                f"\n{Fore.YELLOW}[WATCH]{Fore.RESET} "
+                                f"Change detected but previous run still in progress — skipping."
+                            )
+                        last_mtime = current_mtime
+                        time.sleep(poll_interval)
+                        continue
+
+                    try:
+                        _is_running = True
+                        print(
+                            f"\n{Fore.YELLOW}[WATCH]{Fore.RESET} "
+                            f"Change detected — re-running task..."
+                        )
+                        last_mtime = current_mtime
+                        run_loop(
+                            task_file=task_path,
+                            project_path=project_path,
+                        )
+                        print(
+                            f"\n{Fore.GREEN}[WATCH]{Fore.RESET} "
+                            f"Run complete. Waiting for next change..."
+                        )
+                    except Exception as e:
+                        print(f"{Fore.RED}[WATCH ERROR]{Fore.RESET} Run failed: {e}")
+                    finally:
+                        _is_running = False
+                        _run_lock.release()
 
             time.sleep(poll_interval)
 

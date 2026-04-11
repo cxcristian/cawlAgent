@@ -1,2 +1,2 @@
-# Deprecado: funcionalidad movida a system_tools.py -> run_command
-# Este archivo se mantiene para compatibilidad y será eliminado en futuras versiones.
+# Este archivo está deprecado. La funcionalidad fue movida a system_tools.py -> run_command.
+# Eliminar en próxima versión mayor.

@@ -10,8 +10,14 @@ from pathlib import Path
 from typing import Optional
 
 
-# Maximum file size to read (100 KB)
-MAX_READ_SIZE = 100 * 1024
+def _get_max_read_size() -> int:
+    """Get configurable max read size, defaulting to 100 KB."""
+    try:
+        from cawl.config.config import get_config
+        return get_config().get("tools.max_read_size", 100 * 1024)
+    except Exception:
+        return 100 * 1024
+
 
 # File extensions considered safe to read as text
 TEXT_EXTENSIONS = {
@@ -40,8 +46,10 @@ def _is_text_file(file_path: Path) -> bool:
         return False
 
 
-def _truncate_content(content: str, max_size: int = MAX_READ_SIZE) -> tuple[str, bool]:
+def _truncate_content(content: str, max_size: int = None) -> tuple[str, bool]:
     """Truncate content if it exceeds max size. Returns (content, was_truncated)."""
+    if max_size is None:
+        max_size = _get_max_read_size()
     if len(content) <= max_size:
         return content, False
     return (
@@ -103,7 +111,8 @@ def read_file(path: str, offset: Optional[int] = None, limit: Optional[int] = No
         content, truncated = _truncate_content(content)
         result = f"File: {path}\n{'=' * 60}\n{content}"
         if truncated:
-            result += f"\n\n[CONTENT TRUNCATED: File exceeds {MAX_READ_SIZE // 1024} KB limit]"
+            max_size = _get_max_read_size()
+            result += f"\n\n[CONTENT TRUNCATED: File exceeds {max_size // 1024} KB limit]"
         return result
 
     except UnicodeDecodeError:

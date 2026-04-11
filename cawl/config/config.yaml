@@ -1,9 +1,23 @@
 executor:
   model: "qwen2.5-coder:7b"
   confirm_commands: true
+  max_tool_iterations: 20
+  max_history_chars: 12000
+  max_history_turns: 4
+  max_json_retries: 2
+  command_timeout: 60
 
 planner:
   model: "qwen2.5-coder:7b"
+
+tools:
+  max_read_size: 102400       # 100 KB
+  max_file_write_size: 1048576 # 1 MB
+
+memory:
+  max_runs: 20
+  max_task_truncate: 200
+  max_output_truncate: 300
 
 paths:
   base: "."

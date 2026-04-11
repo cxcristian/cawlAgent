@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QTreeView, QTextEdit, QPushButton, QLabel,
     QFileSystemModel, QScrollArea, QSizePolicy, QFrame, QLineEdit,
-    QFileDialog, QShortcut
+    QFileDialog, QShortcut, QMessageBox
 )
 from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QDir, QSize, QTimer, QPropertyAnimation,
@@ -216,6 +216,7 @@ class AgentWorker(QThread):
     response_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     status_update  = pyqtSignal(str, str)   # (event_type, message)
+    confirm_run    = pyqtSignal(str)          # command string to confirm
 
     def __init__(self, message: str, history: list, system_prompt: str, model: str):
         super().__init__()
@@ -223,6 +224,12 @@ class AgentWorker(QThread):
         self.history = history
         self.system_prompt = system_prompt
         self.model = model
+        self._run_allowed = True  # set to False by main thread if user denies
+
+        # Load configurable constants
+        from cawl.config.config import get_config
+        config = get_config()
+        self.max_iter = config.get("executor.max_tool_iterations", 20)
 
     def run(self):
         try:
@@ -243,7 +250,7 @@ class AgentWorker(QThread):
                 messages.extend(self.history)
                 messages.append({"role": "user", "content": self.message})
 
-                MAX_ITER = 20
+                MAX_ITER = self.max_iter
                 for _ in range(MAX_ITER):
                     self.status_update.emit("thinking", "Razonando...")
                     response = client.chat_with_tools(messages=messages, temperature=0.1)
@@ -255,6 +262,23 @@ class AgentWorker(QThread):
                     for tool_call in response["tool_calls"]:
                         tool_name = tool_call["name"]
                         tool_args = tool_call.get("arguments", {})
+
+                        # Confirmation gate for run_command
+                        if tool_name == "run_command":
+                            cmd = tool_args.get("command", str(tool_args))
+                            self._run_allowed = True  # reset per-call
+                            self.confirm_run.emit(cmd)
+                            # Wait for main thread to set _run_allowed
+                            while self.isRunning() and hasattr(self, "_waiting_confirm"):
+                                QThread.msleep(50)
+                            if not self._run_allowed:
+                                result_str = "Command execution denied by user."
+                                self.status_update.emit("tool_call", f"{tool_name} → DENIED")
+                                messages.append({
+                                    "role": "user",
+                                    "content": f"RESULTADO de {tool_name}: {result_str}",
+                                })
+                                continue
 
                         self.status_update.emit(
                             "tool_call",
@@ -771,7 +795,21 @@ class CawlWindow(QMainWindow):
         self.worker.response_ready.connect(self._on_response)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.status_update.connect(self._on_status_update)
+        self.worker.confirm_run.connect(self._on_confirm_run)
         self.worker.start()
+
+    def _on_confirm_run(self, command: str):
+        """Show a modal confirmation dialog for run_command in the UI."""
+        self.worker._waiting_confirm = True
+        reply = QMessageBox.question(
+            self,
+            "Confirmar ejecución de comando",
+            f"El agente quiere ejecutar:\n\n<code>{command}</code>\n\n¿Autorizar?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        self.worker._run_allowed = reply == QMessageBox.Yes
+        del self.worker._waiting_confirm
 
     def _show_status_bubble(self):
         """Insert an animated status bubble into the chat panel."""
