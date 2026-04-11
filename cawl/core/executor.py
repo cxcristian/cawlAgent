@@ -27,24 +27,6 @@ def _extract_json(text: str) -> str:
     return text.strip()
 
 
-def _execute_inferred_tool(tool_name: str, tool_input: dict) -> dict:
-    func = get_tool(tool_name)
-    if func is None:
-        return {"action": "error", "output": f"Tool '{tool_name}' not found."}
-
-    args_preview = str(tool_input)[:80] + ("..." if len(str(tool_input)) > 80 else "")
-    status.emit("tool_call", f"{tool_name}({args_preview})")
-    print(f"  [Action] Calling inferred tool {tool_name} with input: {tool_input}")
-    try:
-        result = func(**tool_input)
-    except Exception as e:
-        status.emit("error", f"{tool_name} lanzó excepción: {e}")
-        return {"action": "error", "tool": tool_name, "input": tool_input, "output": f"Tool raised: {e}"}
-    preview = str(result)[:100].replace("\n", " ")
-    status.emit("tool_result", f"{tool_name} → {preview}")
-    return {"action": "tool_call", "tool": tool_name, "input": tool_input, "output": str(result)}
-
-
 def reset_always_run() -> None:
     """Reset the session-wide 'always run' flag (call between sessions)."""
     global _always_run
@@ -176,27 +158,71 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
         status.emit("tool_result", f"write_file → {preview}")
         return {"action": "tool_call", "tool": "write_file", "input": {"path": path, "content": content}, "output": str(result)}
 
-    # Heuristic phrases that indicate the model is reasoning instead of producing content
-    _META_COMMENT_PATTERNS = [
-        r"(?i)(I will|voy a|para completar|para cumplir|voy a usar|usaré|usare)",
-        r"(?i)(I need to|debo|tengo que|primero debo)",
-        r"(?i)(I should|debería|sería mejor)",
-        r"(?i)(in this step|en este paso|en este step)",
-        r"(?i)(To complete|para completar|para finalizar|para terminar)",
+    # Heuristic phrases that indicate the model is reasoning instead of producing content.
+    # These are *signals*, not absolute rejectors — see _is_meta_comment() logic below.
+    _META_COMMENT_SIGNALS = [
+        r"(?i)\bI will\b",
+        r"(?i)\bI'm going to\b",
+        r"(?i)\bTo complete this\b",
+        r"(?i)\bpara completar\b",
+        r"(?i)\bpara finalizar\b",
+        r"(?i)\bpara terminar\b",
+        r"(?i)\bpara cumplir\b",
+        r"(?i)\bI need to\b",
+        r"(?i)\bprimero debo\b",
+    ]
+
+    # Content patterns that are NEVER meta-commentary (whitelist)
+    _VALID_CONTENT_SIGNALS = [
+        r"^#{1,6}\s",           # Markdown headings
+        r"^-\s",                # Bullet list items
+        r"^\d+\.\s",            # Numbered list items
+        r"^\|",                 # Table rows
+        r"^```",                # Code blocks
+        r"^\*\*|\b\w+:\s*\d",   # Key-value pairs (metrics, stats)
+        r"^[A-ZÁÉÍÓÚÑ]",        # Lines starting with capital (likely prose/content)
     ]
 
     def _is_meta_comment(text: str) -> bool:
-        """Check if text looks like reasoning instead of actual content."""
-        text_lower = text.strip().lower()
-        # If it's very short (< 100 chars) and mentions a tool name, it's likely meta
-        if len(text_lower) < 100:
-            for tool in ("write_file", "read_file", "grep_search", "glob_files"):
-                if tool in text_lower:
+        """
+        Check if text looks like reasoning instead of actual file content.
+
+        Strategy: require MULTIPLE signals to reject (not just one match).
+        Also, if the text contains valid content patterns (headings, lists,
+        stats, code), it's probably real content even if it has a meta phrase.
+        """
+        text_stripped = text.strip()
+
+        # Very short text (< 60 chars) that mentions a tool name → likely meta
+        if len(text_stripped) < 60:
+            for tool in ("write_file", "read_file", "grep_search", "glob_files",
+                         "list_files", "run_command", "search_web"):
+                if tool in text_stripped.lower():
                     return True
-        for pattern in _META_COMMENT_PATTERNS:
-            if re.search(pattern, text_lower):
-                return True
-        return False
+
+        # Check whitelist: if text has substantive content patterns, accept it
+        has_valid_content = False
+        for line in text_stripped.split("\n")[:5]:  # check first 5 lines
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            for pattern in _VALID_CONTENT_SIGNALS:
+                if re.search(pattern, line_stripped):
+                    has_valid_content = True
+                    break
+            if has_valid_content:
+                break
+
+        if has_valid_content:
+            return False  # Has real content → never reject
+
+        # Count meta signals — require 2+ to reject (reduce false positives)
+        meta_signal_count = 0
+        for pattern in _META_COMMENT_SIGNALS:
+            if re.search(pattern, text_stripped):
+                meta_signal_count += 1
+
+        return meta_signal_count >= 2
 
     # If the current step requires writing to a file and the model returned a final answer,
     # validate the output content before auto-writing.

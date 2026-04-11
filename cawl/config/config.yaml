@@ -6,6 +6,8 @@ executor:
   max_history_turns: 4
   max_json_retries: 2
   command_timeout: 60
+  streaming: true              # Enable token-by-token streaming in REPL
+  streaming_throttle_ms: 200   # Min ms between spinner updates during streaming
 
 planner:
   model: "qwen2.5-coder:7b"

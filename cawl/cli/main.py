@@ -229,6 +229,7 @@ class CawlAgent:
         self.MAX_TOOL_ITERATIONS = config.get("executor.max_tool_iterations", 20)
         self.MAX_HISTORY_CHARS = config.get("executor.max_history_chars", 12_000)
         self.MIN_HISTORY_TURNS = config.get("executor.max_history_turns", 4)
+        self.streaming_enabled = config.get("executor.streaming", True)
 
     def initialize(self) -> bool:
         """Initialize connection to Ollama and verify model."""
@@ -337,12 +338,19 @@ class CawlAgent:
 
             if streaming:
                 # Streaming: collect chunks into a buffer, display via spinner
+                # with throttle to avoid flooding the terminal
+                config = get_config()
+                throttle_ms = config.get("executor.streaming_throttle_ms", 200)
                 response_buffer = {"content": ""}
+                _last_emit = [0.0]  # mutable container for closure
+
                 def _on_chunk(chunk: str):
                     response_buffer["content"] += chunk
-                    # Update spinner status with live content preview
-                    preview = response_buffer["content"][-60:].replace("\n", " ")
-                    status.emit("thinking", preview)
+                    now = time.monotonic()
+                    if now - _last_emit[0] >= (throttle_ms / 1000.0):
+                        preview = response_buffer["content"][-60:].replace("\n", " ")
+                        status.emit("thinking", preview)
+                        _last_emit[0] = now
 
                 response = self.client.chat_with_tools(
                     messages=messages, temperature=0.1, stream=True, stream_callback=_on_chunk
@@ -439,7 +447,7 @@ class CawlAgent:
             try:
                 spinner = TerminalSpinner()
                 spinner.start()
-                response = self.chat_with_tools_loop(user_input)
+                response = self.chat_with_tools_loop(user_input, streaming=self.streaming_enabled)
                 spinner.stop()
                 print(f"\n{response}\n")
             except Exception as e:
