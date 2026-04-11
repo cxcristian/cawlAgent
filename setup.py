@@ -12,6 +12,7 @@ setup(
         "requests",
         "colorama",
         "PyQt5>=5.15.0",
+        "prompt_toolkit>=3.0.0",
     ],
     entry_points={
         "console_scripts": [

@@ -732,6 +732,25 @@ def cmd_ui(args):
     launch_ui(project_path=project_path, model=model)
 
 
+def cmd_shell(args):
+    """Launch the interactive CawlShell (rich terminal with history, completion, etc.)."""
+    try:
+        from cawl.shell import CawlShell
+    except ImportError as e:
+        print(f"[ERROR] No se pudo cargar CawlShell: {e}")
+        print("Asegúrate de tener prompt_toolkit instalado: pip install -e .")
+        sys.exit(1)
+
+    project_path = os.path.abspath(args.project or os.getcwd())
+    config = get_config()
+    model = args.model or config.get("executor.model", DEFAULT_MODEL)
+
+    shell = CawlShell(project_path=project_path, model=model)
+    if not shell.initialize():
+        sys.exit(1)
+    shell.run()
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -809,6 +828,16 @@ def main():
     ui_parser.add_argument("--model", type=str, default=None,
                            help="Ollama model to use (default from config.yaml)")
     ui_parser.set_defaults(func=cmd_ui)
+
+    # shell
+    shell_parser = subparsers.add_parser(
+        "shell", help="Rich interactive shell with history, tab-completion, and context"
+    )
+    shell_parser.add_argument("--project", type=str, default=None,
+                              help="Project directory (default: cwd)")
+    shell_parser.add_argument("--model", type=str, default=None,
+                              help="Ollama model to use (default from config.yaml)")
+    shell_parser.set_defaults(func=cmd_shell)
 
     args = parser.parse_args()
 
