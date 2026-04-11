@@ -8,6 +8,7 @@ import re
 import glob as glob_module
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def _get_max_read_size() -> int:
@@ -233,20 +234,43 @@ def grep_search(
 
     results = []
     try:
-        for fpath in files_to_search:
+        def search_file(fpath):
+            """Search for pattern in a single file."""
+            file_results = []
             if not fpath.is_file() or not _is_text_file(fpath):
-                continue
+                return file_results
             try:
                 with open(fpath, "r", encoding="utf-8") as f:
                     for line_num, line in enumerate(f, 1):
                         if regex.search(line):
-                            results.append((fpath, line_num, line.rstrip()))
-                            if len(results) >= limit:
+                            file_results.append((fpath, line_num, line.rstrip()))
+                            if len(file_results) >= limit:
                                 break
             except (UnicodeDecodeError, PermissionError, OSError):
-                continue
-            if len(results) >= limit:
-                break
+                pass
+            return file_results
+
+        if len(files_to_search) <= 10:
+            # Small number of files - sequential is fine
+            for fpath in files_to_search:
+                file_results = search_file(fpath)
+                results.extend(file_results)
+                if len(results) >= limit:
+                    break
+        else:
+            # Large number of files - use thread pool
+            max_workers = min(8, len(files_to_search))  # Cap at 8 threads
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_file = {
+                    executor.submit(search_file, fpath): fpath
+                    for fpath in files_to_search
+                }
+                
+                for future in as_completed(future_to_file):
+                    file_results = future.result()
+                    results.extend(file_results)
+                    if len(results) >= limit:
+                        break
     except Exception as e:
         return f"[ERROR] Search failed: {e}"
 

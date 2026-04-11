@@ -8,6 +8,8 @@ executor:
   command_timeout: 60
   streaming: true              # Enable token-by-token streaming in REPL
   streaming_throttle_ms: 200   # Min ms between spinner updates during streaming
+  llm_max_retries: 3           # Max retries for 500 errors
+  llm_retry_delay: 2           # Initial delay in seconds (exponential backoff)
 
 planner:
   model: "qwen2.5-coder:7b"

@@ -2,6 +2,7 @@
 
 import json
 import re
+import hashlib
 import threading
 from cawl.tools.registry import get_tool, TOOLS, TOOL_DESCRIPTIONS
 from cawl.core.llm_client import get_llm_client
@@ -12,6 +13,48 @@ from cawl.config.config import get_config
 # Uses a Lock to protect read-modify-write cycles.
 _always_run: bool = False
 _always_run_lock = threading.Lock()
+
+# Thread-safe tool result cache
+_tool_cache: dict[str, str] = {}
+_tool_cache_lock = threading.Lock()
+_tool_cache_enabled = True
+
+
+def _get_cache_key(tool_name: str, tool_input: dict) -> str:
+    """Generate a cache key for a tool call."""
+    key_str = f"{tool_name}:{json.dumps(tool_input, sort_keys=True)}"
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+
+def _get_cached_result(tool_name: str, tool_input: dict) -> str | None:
+    """Get cached tool result if available."""
+    if not _tool_cache_enabled:
+        return None
+    # Only cache read-only tools to avoid side effects
+    READ_ONLY_TOOLS = {"read_file", "list_files", "grep_search", "glob_files"}
+    if tool_name not in READ_ONLY_TOOLS:
+        return None
+    with _tool_cache_lock:
+        key = _get_cache_key(tool_name, tool_input)
+        return _tool_cache.get(key)
+
+
+def _cache_result(tool_name: str, tool_input: dict, result: str) -> None:
+    """Cache a tool result."""
+    if not _tool_cache_enabled:
+        return
+    READ_ONLY_TOOLS = {"read_file", "list_files", "grep_search", "glob_files"}
+    if tool_name not in READ_ONLY_TOOLS:
+        return
+    with _tool_cache_lock:
+        key = _get_cache_key(tool_name, tool_input)
+        _tool_cache[key] = str(result)
+
+
+def clear_tool_cache() -> None:
+    """Clear the tool result cache."""
+    with _tool_cache_lock:
+        _tool_cache.clear()
 
 
 def _extract_json(text: str) -> str:
@@ -86,14 +129,19 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
         })
 
     if previous_results:
-        context_lines = ["PREVIOUS STEPS RESULTS:"]
-        for i, res in enumerate(previous_results, start=1):
+        # Only include last N steps to keep context manageable
+        max_context_steps = config.get("executor.max_history_turns", 4)
+        recent_results = previous_results[-max_context_steps:]
+        
+        context_lines = ["PREVIOUS STEPS RESULTS (most recent first):"]
+        for i, res in enumerate(recent_results, start=len(previous_results) - len(recent_results) + 1):
             action = res.get("action", "unknown")
             tool = res.get("tool", "<none>")
             tool_input = res.get("input", {})
-            output = str(res.get("output", ""))[:500]
+            # Truncate output more aggressively for context
+            output = str(res.get("output", ""))[:200]  # Reduced from 500
             context_lines.append(
-                f"Step {i}: action={action}, tool={tool}, input={tool_input}, output={output}"
+                f"Step {i}: action={action}, tool={tool}, output={output}"
             )
         messages.append({
             "role": "user",
@@ -299,6 +347,19 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
         if func is None:
             return {"action": "error", "output": f"Tool '{tool_name}' not found."}
 
+        # Check cache before executing
+        cached = _get_cached_result(tool_name, tool_input)
+        if cached is not None:
+            preview = cached[:100].replace("\n", " ")
+            status.emit("tool_cache", f"{tool_name} → {preview} (cached)")
+            print(f"  [CACHE HIT] {tool_name} with input: {tool_input}")
+            return {
+                "action": "tool_call",
+                "tool": tool_name,
+                "input": tool_input,
+                "output": cached,
+            }
+
         args_preview = str(tool_input)[:80] + ("..." if str(tool_input).__len__() > 80 else "")
         status.emit("tool_call", f"{tool_name}({args_preview})")
         print(f"  [Action] Calling {tool_name} with input: {tool_input}")
@@ -316,13 +377,22 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
             status.emit("error", f"{tool_name} lanzó excepción: {e}")
             return {"action": "error", "tool": tool_name, "input": tool_input, "output": f"Tool raised: {e}"}
 
-        preview = str(result)[:100].replace("\n", " ")
+        # Cache the result
+        _cache_result(tool_name, tool_input, result)
+
+        # Truncate result for storage to keep context manageable
+        max_output_len = 500  # Truncate stored output
+        output_str = str(result)
+        if len(output_str) > max_output_len:
+            output_str = output_str[:max_output_len] + f"... [TRUNCATED]"
+
+        preview = output_str[:100].replace("\n", " ")
         status.emit("tool_result", f"{tool_name} → {preview}")
         return {
             "action": "tool_call",
             "tool": tool_name,
             "input": tool_input,
-            "output": str(result),
+            "output": output_str,
         }
 
     return res

@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from cawl.core.llm_client import get_llm_client, OllamaClient, DEFAULT_MODEL
@@ -52,9 +53,11 @@ class WorkerAgent:
         model:        Modelo Ollama a usar (hereda del orquestador si None).
         tools:        Lista de nombres de tools disponibles (None = todas).
         project_path: Ruta del proyecto (para contexto en prompts).
+        parallel_tools: Si True, ejecuta tool calls independientes en paralelo.
     """
 
     MAX_TOOL_ITERATIONS = 15
+    MAX_PARALLEL_TOOLS = 4  # Max concurrent tool calls
 
     def __init__(
         self,
@@ -63,6 +66,7 @@ class WorkerAgent:
         model: Optional[str] = None,
         tools: Optional[list[str]] = None,
         project_path: str = ".",
+        parallel_tools: bool = True,
     ):
         self.role = role
         self.instructions = instructions
@@ -71,6 +75,7 @@ class WorkerAgent:
         self.project_path = project_path
         self.chat_history: list[dict] = []
         self._client: Optional[OllamaClient] = None
+        self.parallel_tools = parallel_tools
 
     def _get_client(self, fallback_model: str) -> OllamaClient:
         model = self.model or fallback_model
@@ -111,6 +116,67 @@ class WorkerAgent:
             f"{tool_filter}\n"
         )
 
+    def _execute_single_tool(self, tool_name: str, tool_args: dict) -> str:
+        """Execute a single tool call and return result string."""
+        if self.allowed_tools and tool_name not in self.allowed_tools:
+            result_str = (
+                f"[ERROR] Tool '{tool_name}' not in allowed list for role '{self.role}'. "
+                f"Allowed: {self.allowed_tools}"
+            )
+            status.emit("error", result_str[:80])
+            return result_str
+
+        func = get_tool(tool_name)
+        if func is None:
+            result_str = f"[ERROR] Unknown tool: {tool_name}"
+            status.emit("error", result_str)
+            return result_str
+
+        status.emit("tool_call", f"[{self.role}] {tool_name}({str(tool_args)[:50]})")
+        try:
+            result = func(**tool_args) if isinstance(tool_args, dict) else func(tool_args)
+            result_str = str(result)
+            status.emit("tool_result", f"[{self.role}] {tool_name} → {result_str[:60]}")
+            return result_str
+        except Exception as e:
+            result_str = f"[ERROR] Tool raised: {e}"
+            status.emit("error", result_str[:80])
+            return result_str
+
+    def _execute_tool_calls(self, tool_calls: list[dict]) -> list[tuple[str, str]]:
+        """
+        Execute multiple tool calls, potentially in parallel.
+        Returns list of (tool_name, result) tuples.
+        """
+        if not self.parallel_tools or len(tool_calls) <= 1:
+            # Sequential execution
+            results = []
+            for tool_call in tool_calls:
+                tool_name = tool_call.get("name", "")
+                tool_args = tool_call.get("arguments", {})
+                result_str = self._execute_single_tool(tool_name, tool_args)
+                results.append((tool_name, result_str))
+            return results
+
+        # Parallel execution with thread pool
+        results = [None] * len(tool_calls)
+        
+        def execute_and_store(idx, tc):
+            tool_name = tc.get("name", "")
+            tool_args = tc.get("arguments", {})
+            result = self._execute_single_tool(tool_name, tool_args)
+            results[idx] = (tool_name, result)
+
+        with ThreadPoolExecutor(max_workers=min(len(tool_calls), self.MAX_PARALLEL_TOOLS)) as executor:
+            futures = [
+                executor.submit(execute_and_store, i, tc)
+                for i, tc in enumerate(tool_calls)
+            ]
+            for future in as_completed(futures):
+                future.result()  # Wait and propagate exceptions
+
+        return results
+
     def run(self, task: str, fallback_model: str = DEFAULT_MODEL) -> str:
         """
         Execute a task and return the result as a string.
@@ -143,35 +209,20 @@ class WorkerAgent:
                 status.emit("done", f"[{self.role}] Tarea completada")
                 return content
 
-            for tool_call in tool_calls:
-                tool_name = tool_call.get("name", "")
-                tool_args = tool_call.get("arguments", {})
+            # Execute tool calls (potentially in parallel)
+            results = self._execute_tool_calls(tool_calls)
 
-                # Enforce tool whitelist
-                if self.allowed_tools and tool_name not in self.allowed_tools:
-                    result_str = (
-                        f"[ERROR] Tool '{tool_name}' not in allowed list for role '{self.role}'. "
-                        f"Allowed: {self.allowed_tools}"
-                    )
-                    status.emit("error", result_str[:80])
-                else:
-                    func = get_tool(tool_name)
-                    if func is None:
-                        result_str = f"[ERROR] Unknown tool: {tool_name}"
-                        status.emit("error", result_str)
-                    else:
-                        status.emit("tool_call", f"[{self.role}] {tool_name}({str(tool_args)[:50]})")
-                        try:
-                            result = func(**tool_args) if isinstance(tool_args, dict) else func(tool_args)
-                            result_str = str(result)
-                            status.emit("tool_result", f"[{self.role}] {tool_name} → {result_str[:60]}")
-                        except Exception as e:
-                            result_str = f"[ERROR] Tool raised: {e}"
-                            status.emit("error", result_str[:80])
-
+            # Append all results to messages
+            for tool_name, result_str in results:
+                # Truncate very long results to avoid bloating message history
+                max_result_len = 1000  # Limit tool result in history
+                truncated_result = result_str[:max_result_len]
+                if len(result_str) > max_result_len:
+                    truncated_result += f"\n... [TRUNCATED: {len(result_str) - max_result_len} chars]"
+                
                 messages.append({
                     "role": "user",
-                    "content": f"RESULTADO de {tool_name}: {result_str}",
+                    "content": f"RESULTADO de {tool_name}: {truncated_result}",
                 })
 
         return f"[{self.role}] Máximo de iteraciones alcanzado ({self.MAX_TOOL_ITERATIONS})."

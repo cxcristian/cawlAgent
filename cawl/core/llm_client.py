@@ -6,6 +6,7 @@ Full-featured client with chat, generate, tool call parsing, and model verificat
 
 import json
 import re
+import time
 import requests
 from typing import Optional
 
@@ -14,6 +15,8 @@ from cawl.config.config import get_config
 
 OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen2.5-coder:7b"
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
 
 
 class OllamaClient:
@@ -23,6 +26,34 @@ class OllamaClient:
         self.url = url.rstrip("/")
         self.model = model
         self._verify_connection()
+
+    def _retry_request(self, func, *args, **kwargs):
+        """
+        Execute a request with retry logic for 500 errors.
+        Uses exponential backoff: 2s, 4s, 8s...
+        """
+        config = get_config()
+        max_retries = config.get("executor.llm_max_retries", MAX_RETRIES)
+        retry_delay = config.get("executor.llm_retry_delay", RETRY_DELAY)
+        
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 500 and attempt < max_retries - 1:
+                    delay = retry_delay * (2 ** attempt)  # 2s, 4s, 8s
+                    print(f"[WARNING] Ollama returned 500 error (attempt {attempt + 1}/{max_retries}). "
+                          f"Retrying in {delay}s...")
+                    time.sleep(delay)
+                    last_exception = e
+                else:
+                    raise
+            except requests.exceptions.RequestException:
+                raise
+        
+        if last_exception:
+            raise last_exception
 
     def _verify_connection(self) -> None:
         """Verify that Ollama is running and accessible."""
@@ -63,7 +94,8 @@ class OllamaClient:
                 "num_predict": 8192,
             },
         }
-        try:
+        
+        def make_request():
             response = requests.post(
                 f"{self.url}/api/generate", json=payload, timeout=timeout
             )
@@ -71,6 +103,9 @@ class OllamaClient:
             if stream:
                 return self._handle_streaming(response)
             return self._handle_non_streaming(response)
+        
+        try:
+            return self._retry_request(make_request)
         except requests.exceptions.Timeout:
             raise TimeoutError("Ollama request timed out. The model may be loading.")
         except requests.exceptions.RequestException as e:
@@ -134,7 +169,7 @@ class OllamaClient:
         if json_format:
             payload["format"] = "json"
 
-        try:
+        def make_request():
             response = requests.post(
                 f"{self.url}/api/chat", json=payload, timeout=timeout, stream=stream
             )
@@ -145,6 +180,9 @@ class OllamaClient:
 
             data = response.json()
             return data.get("message", {}).get("content", "").strip()
+
+        try:
+            return self._retry_request(make_request)
         except requests.exceptions.Timeout:
             raise TimeoutError("Ollama chat request timed out.")
         except requests.exceptions.RequestException as e:
@@ -242,7 +280,8 @@ class OllamaClient:
                 "num_predict": 8192,
             },
         }
-        try:
+        
+        def make_request():
             response = requests.post(
                 f"{self.url}/api/chat", json=payload, timeout=300, stream=stream
             )
@@ -260,6 +299,8 @@ class OllamaClient:
                 result["tool_calls"].append(tool_call)
             return result
 
+        try:
+            return self._retry_request(make_request)
         except requests.exceptions.Timeout:
             raise TimeoutError("Ollama chat_with_tools request timed out.")
         except requests.exceptions.RequestException as e:
