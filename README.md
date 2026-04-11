@@ -10,16 +10,20 @@
 
 | Feature | Descripción |
 |---|---|
+| 🐚 **CawlShell** | Shell interactiva con historial navegable, tab-completion, contexto visible y verbose mode |
 | 🧠 **Planner → Executor** | Las tareas se descomponen automáticamente en pasos ejecutables |
 | 🤖 **Multi-Agente** | Orquestador + Workers especializados, secuencial o en paralelo |
 | 💾 **Memoria por Proyecto** | Cada proyecto tiene su `.cawl/memory.json` aislado |
 | ⚡ **Status en Tiempo Real** | Spinner animado en terminal y burbuja de progreso en UI |
-| 🔄 **Retry Automático** | Re-prompt al modelo si devuelve JSON inválido (hasta 2 intentos) |
-| ⏱️ **Timeout en Comandos** | `run_command` se mata automáticamente después de 60s |
+| 🔄 **Retry Automático** | Re-prompt al modelo si devuelve JSON inválido (configurable) |
+| 🛡️ **Validación de auto-write** | Rechaza respuestas de razonamiento al escribir archivos (reintento automático) |
+| 📡 **Streaming con throttle** | Tokens en tiempo real sin saturar la terminal (200ms entre updates) |
+| ⏱️ **Timeout en Comandos** | `run_command` se mata automáticamente después de 60s (configurable) |
 | 🌐 **Búsqueda Web** | Herramienta `search_web` vía DuckDuckGo, sin API key |
 | 👁️ **Modo Watch** | Re-ejecuta una tarea automáticamente cada vez que guardas el `.md` |
 | 🖥️ **GUI incluida** | Chat con tema oscuro, árbol de archivos y progreso en tiempo real |
-| 🔒 **Confirmación de seguridad** | Confirmación antes de ejecutar comandos de shell |
+| 🔒 **Confirmación de seguridad** | Confirmación antes de ejecutar comandos de shell (CLI, UI y Shell) |
+| ⚙️ **Config flexible** | Overrides por env vars, por proyecto, o por usuario |
 
 ---
 
@@ -108,14 +112,37 @@ python -c "import sys, os; print(os.path.join(sys.prefix, 'Scripts'))"
 executor:
   model: "qwen2.5-coder:7b"
   confirm_commands: true      # pedir confirmación antes de run_command
+  max_tool_iterations: 20     # máx llamadas a herramientas por turno
+  max_history_chars: 12000    # límite de caracteres en historial REPL
+  max_history_turns: 4        # turnos mínimos a conservar al comprimir
+  max_json_retries: 2         # reintentos por JSON inválido
+  command_timeout: 60         # timeout por defecto para run_command (segundos)
+  streaming: true             # habilitar streaming token a token en REPL
+  streaming_throttle_ms: 200  # ms mínimos entre updates del spinner
 
 planner:
   model: "qwen2.5-coder:7b"
+
+tools:
+  max_read_size: 102400        # límite de lectura: 100 KB
+  max_file_write_size: 1048576 # límite de escritura: 1 MB
+
+memory:
+  max_runs: 20                 # runs máximos almacenados por proyecto
+  max_task_truncate: 200       # chars máximos para task en memoria
+  max_output_truncate: 300     # chars máximos para output por step
 
 paths:
   base: "."
   memory: ".cawl"
 ```
+
+### Overrides por capas (mayor prioridad gana)
+
+1. **Variables de entorno**: `CAWL_EXECUTOR__MODEL=qwen2.5:14b`
+2. **Config por proyecto**: `{proyecto}/.cawl/config.yaml`
+3. **Config por usuario**: `~/.cawl/config.yaml`
+4. **Config empaquetado**: `cawl/config/config.yaml`
 
 ---
 
@@ -144,6 +171,42 @@ Comandos internos del REPL:
 | `/tools` | Listar herramientas disponibles |
 | `/clear` | Limpiar historial de chat |
 | `/quit` | Salir |
+
+### CawlShell — Shell enriquecida (nuevo en v0.3.0)
+
+```bash
+cawl shell
+```
+
+Shell interactiva inspirada en Qwen Code con experiencia de terminal avanzada:
+
+| Feature | Cómo |
+|---|---|
+| Historial navegable | `↑` / `↓` |
+| Tab-completion | `Tab` (comandos slash, archivos del proyecto, nombres de herramientas) |
+| Nueva línea | `Shift+Enter` |
+| Auto-sugerencias | Historial previo aparece en gris |
+| Contexto visible | El prompt muestra `[N file(s)]` cuando hay archivos en contexto |
+| Verbose mode | `/verbose on` — muestra tool calls con argumentos y resultados completos |
+
+Comandos de la Shell:
+
+| Comando | Acción |
+|---|---|
+| `/help` | Mostrar ayuda |
+| `/status` | Verificar conexión a Ollama |
+| `/tools` | Listar herramientas |
+| `/verbose on\|off` | Toggle modo detallado |
+| `/context` | Ver archivos en contexto del LLM |
+| `/add <file>` | Agregar archivo al contexto del prompt |
+| `/remove <file>` | Quitar archivo del contexto |
+| `/clear-context` | Limpiar todos los archivos del contexto |
+| `/project <path>` | Cambiar directorio del proyecto |
+| `/model <name>` | Cambiar modelo (reconecta) |
+| `/clear` | Limpiar historial de chat |
+| `/quit` | Salir |
+
+El historial se guarda persistentemente en `~/.cawl/shell_history` entre sesiones.
 
 ### Ejecutar una tarea desde archivo `.md`
 
@@ -228,13 +291,13 @@ El LLM elige y ejecuta estas herramientas automáticamente:
 cawl_agent/
 ├── cawl/
 │   ├── cli/
-│   │   └── main.py              # CLI, REPL, TerminalSpinner, cmd_multi
+│   │   └── main.py              # CLI, REPL, TerminalSpinner, cmd_multi, cmd_shell
 │   ├── config/
-│   │   ├── config.py
-│   │   └── config.yaml
+│   │   ├── config.py            # Config loader con overrides (env, user, project)
+│   │   └── config.yaml          # Todos los parámetros configurables
 │   ├── core/
-│   │   ├── executor.py          # Ejecuta pasos individuales con retry JSON
-│   │   ├── llm_client.py        # Cliente Ollama (chat, generate, tool parsing)
+│   │   ├── executor.py          # Ejecuta pasos con retry JSON + validación auto-write
+│   │   ├── llm_client.py        # Cliente Ollama (chat, generate, streaming, tool parsing)
 │   │   ├── loop.py              # Bucle principal plan→execute
 │   │   ├── multi_agent.py       # OrchestratorAgent + WorkerAgent
 │   │   ├── planner.py           # Descompone tareas con retry JSON
@@ -242,14 +305,20 @@ cawl_agent/
 │   ├── memory/
 │   │   ├── global_memory.py
 │   │   └── project_memory.py    # Memoria aislada por proyecto
+│   ├── shell/
+│   │   ├── __init__.py
+│   │   ├── shell.py             # CawlShell — prompt_toolkit session
+│   │   ├── completer.py         # Tab-completion (comandos, archivos, herramientas)
+│   │   ├── context.py           # Tracker de contexto (archivos, proyecto, modelo)
+│   │   └── formatter.py         # Output formatting (verbose, timing, tool display)
 │   ├── tasks/
 │   │   └── parser.py
 │   ├── tools/
 │   │   ├── file_tools.py        # read_file, write_file, list_files, grep, glob
 │   │   ├── registry.py          # Registro central de herramientas
-│   │   ├── system_tools.py      # run_command con timeout
+│   │   ├── system_tools.py      # run_command con timeout configurable
 │   │   └── web_tools.py         # search_web (DuckDuckGo)
-│   └── ui.py                    # GUI PyQt5 con StatusBubble animada
+│   └── ui.py                    # GUI PyQt5 con StatusBubble animada + confirmación
 ├── tasks/                        # Carpeta sugerida para archivos .md de tareas
 ├── setup.py
 └── README.md
@@ -406,10 +475,16 @@ El REPL comprime automáticamente el historial. También puedes limpiarlo manual
 - [x] `search_web` sin API key
 - [x] Modo `watch` (re-run al guardar)
 - [x] Sistema multi-agente (Orchestrator + Workers)
+- [x] CawlShell — shell enriquecida con prompt_toolkit
+- [x] Validación de auto-write (rechaza razonamiento como contenido)
+- [x] Streaming con throttle en REPL
+- [x] Config flexible (env vars, per-project, user-level)
+- [x] Confirmación de run_command en UI
+- [x] Thread safety en flags de ejecución
 - [ ] Plugin system para herramientas custom
 - [ ] Interfaz web (alternativa a PyQt5)
 - [ ] Integración con Git (auto-commit de artefactos generados)
-- [ ] Soporte streaming (respuestas token a token en terminal)
+- [ ] Soporte para modelos remotos (no solo Ollama local)
 
 ---
 
