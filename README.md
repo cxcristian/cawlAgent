@@ -83,6 +83,31 @@ ollama pull qwen2.5-coder:7b
 cawl status
 ```
 
+### Inicializar un nuevo proyecto (recomendado)
+
+```bash
+cd mi_proyecto
+cawl init
+```
+
+Esto crea:
+
+```
+mi_proyecto/
+├── .cawl/               # Memoria y config del agente (automático)
+├── tareas/              # Tareas para CAWL
+│   └── PLANTILLA.md     # Guía para que una IA grande escriba tareas ejecutables
+└── parametros/          # Contexto y restricciones
+    ├── PLANTILLA.md     # Guía para definir parámetros del proyecto
+    └── contexto.md      # ← Rellena con info real de tu proyecto
+```
+
+**Flujo de trabajo recomendado:**
+1. `cawl init` — crea la estructura
+2. Edita `parametros/contexto.md` con info de tu proyecto
+3. Pide a Claude/GPT que genere una tarea en `tareas/` siguiendo `PLANTILLA.md`
+4. `cawl run --task tareas/mi_tarea.md` — CAWL ejecuta
+
 Debería mostrar:
 ```
 Ollama: Connected
@@ -319,7 +344,8 @@ cawl_agent/
 │   │   ├── system_tools.py      # run_command con timeout configurable
 │   │   └── web_tools.py         # search_web (DuckDuckGo)
 │   └── ui.py                    # GUI PyQt5 con StatusBubble animada + confirmación
-├── tasks/                        # Carpeta sugerida para archivos .md de tareas
+├── tareas/                        # Tareas .md para CAWL (generadas por IA grande)
+├── parametros/                    # Contexto y restricciones del proyecto
 ├── setup.py
 └── README.md
 ```
@@ -430,9 +456,11 @@ cat .cawl/memory.json   # ver historial del proyecto actual
 
 CAWL está diseñado para ser el **ejecutor local** de planes generados por IAs superiores:
 
-1. **En Claude**: *"Crea un plan detallado en Markdown para [TAREA] con pasos específicos y verificables."*
-2. **Guarda el resultado** en `tareas/mi_tarea.md`
-3. **CAWL ejecuta**: `cawl run --task tareas/mi_tarea.md`
+1. **`cawl init`** en tu proyecto — crea `tareas/` y `parametros/` con plantillas
+2. **Llena `parametros/contexto.md`** con info real de tu proyecto
+3. **En Claude**: Abre `tareas/PLANTILLA.md` y `parametros/` y dile: *"Genera una tarea siguiendo estas plantillas para [TAREA]"*
+4. **Guarda el resultado** en `tareas/mi_tarea.md`
+5. **CAWL ejecuta**: `cawl run --task tareas/mi_tarea.md`
 
 La IA maestra diseña la estrategia. CAWL ejecuta localmente sin consumir tokens adicionales.
 

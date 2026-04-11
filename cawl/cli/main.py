@@ -485,6 +485,19 @@ def cmd_run(args):
     model = args.model or config.get("executor.model", DEFAULT_MODEL)
     project_path = os.path.abspath(args.project or os.getcwd())
 
+    # Check if project is initialized (recommended but not required)
+    cawl_dir = os.path.join(project_path, ".cawl")
+    if not os.path.exists(cawl_dir):
+        print(
+            f"{Fore.YELLOW}[WARNING]{Fore.RESET} Project not initialized. "
+            f"Run {Fore.CYAN}cawl init{Fore.RESET} first for best results."
+        )
+        print(
+            f"  This creates {Fore.YELLOW}tareas/{Fore.RESET} and {Fore.YELLOW}parametros/{Fore.RESET} "
+            f"with AI-guided templates."
+        )
+        print()
+
     # Check Ollama + model
     try:
         result = subprocess.run(["ollama", "list"], capture_output=True, text=True)
@@ -547,14 +560,170 @@ def cmd_plan(args):
 
 
 def cmd_init(args):
-    """Initialize .cawl directory and memory for a project."""
+    """Initialize .cawl directory, tareas/, and parametros/ for a project."""
     project_path = os.path.abspath(args.project or os.getcwd())
     memory = ProjectMemory(project_path)
     memory.set("initialized", True)
+
+    # Create tareas/ directory with template
+    tareas_dir = os.path.join(project_path, "tareas")
+    os.makedirs(tareas_dir, exist_ok=True)
+    plantilla_path = os.path.join(tareas_dir, "PLANTILLA.md")
+    if not os.path.exists(plantilla_path):
+        _write_template_file(plantilla_path, "tareas")
+
+    # Create parametros/ directory with templates
+    parametros_dir = os.path.join(project_path, "parametros")
+    os.makedirs(parametros_dir, exist_ok=True)
+    for name in ("PLANTILLA.md", "contexto.md"):
+        fpath = os.path.join(parametros_dir, name)
+        if not os.path.exists(fpath):
+            _write_template_file(fpath, name)
+
+    cawl_dir = os.path.join(project_path, ".cawl")
     print(
-        f"{Fore.GREEN}[SUCCESS]{Fore.RESET} CAWL initialized in "
-        f"{os.path.join(project_path, '.cawl')}"
+        f"\n{Fore.GREEN}[SUCCESS]{Fore.RESET} CAWL initialized in {Fore.CYAN}{project_path}{Fore.RESET}"
     )
+    print(f"\n{Fore.CYAN}Estructura creada:{Fore.RESET}")
+    print(f"  {Fore.YELLOW}.cawl/{Fore.RESET}         — Memoria y configuración del agente")
+    print(f"  {Fore.YELLOW}tareas/{Fore.RESET}        — Archivos .md de tareas para CAWL")
+    print(f"    └─ {Fore.DIM}PLANTILLA.md{Fore.RESET}   — Guía para que una IA grande escriba tareas ejecutables")
+    print(f"  {Fore.YELLOW}parametros/{Fore.RESET}    — Contexto y restricciones del proyecto")
+    print(f"    ├─ {Fore.DIM}PLANTILLA.md{Fore.RESET}   — Guía para definir parámetros del proyecto")
+    print(f"    └─ {Fore.DIM}contexto.md{Fore.RESET}    — Rellena con info real de tu proyecto")
+    print(f"\n{Fore.DIM}Flujo recomendado:{Fore.RESET}")
+    print(f"  1. Edita {Fore.CYAN}parametros/contexto.md{Fore.RESET} con la info de tu proyecto")
+    print(f"  2. Pide a una IA (Claude/GPT) que genere una tarea en {Fore.CYAN}tareas/{Fore.RESET} siguiendo PLANTILLA.md")
+    print(f"  3. Ejecuta: {Fore.GREEN}cawl run --task tareas/mi_tarea.md{Fore.RESET}")
+
+
+# Template content embedded for portability
+_TAREAS_PLANTILLA = """\
+# PLANTILLA DE TAREA — CAWL
+
+> **PARA LA IA QUE GENERA ESTA TAREA** (Claude, GPT-4, etc.):
+> Este archivo será ejecutado por CAWL, un agente local con un modelo de 7B.
+> El 7B es capaz de seguir instrucciones concretas pero tiende a alucinar si
+> la tarea es ambigua, abstracta o demasiado grande. Sigue estas reglas al
+> diseñar la tarea:
+
+## Reglas para escribir tareas que CAWL pueda ejecutar
+
+1. **Un archivo o acción por paso.** No pidas "crea el modelo y la API" en un solo paso.
+2. **Especifica paths absolutos o relativos claros.** Ejemplo: `src/models/patient.py`.
+3. **Cada paso debe ser verificable.** Un archivo escrito, una línea encontrada, un comando ejecutado.
+4. **No asumas archivos que no existen.** Si necesitas que CAWL lea algo, créalo primero.
+5. **Proporciona el contenido completo cuando se escriba código.** Sin placeholders.
+6. **Evita instrucciones abstractas.** NO: "mejora la arquitectura". SÍ: "agrega validación".
+7. **Menciona la herramienta esperada** (opcional): `[write_file]`, `[grep_search]`, `[read_file]`.
+
+---
+
+## Formato de la tarea
+
+```markdown
+# [Nombre de la tarea]
+
+## Contexto
+[Breve descripción del proyecto, tech stack, y qué se quiere lograr]
+
+## Pasos
+
+1. [Descripción concreta del paso 1]
+2. [Descripción concreta del paso 2]
+3. [Descripción concreta del paso 3]
+...
+N. [Último paso verificable]
+```
+"""
+
+_PARAMETROS_PLANTILLA = """\
+# PLANTILLA DE PARÁMETROS — CAWL
+
+> **PARA LA IA QUE GENERA ESTOS PARÁMETROS** (Claude, GPT-4, etc.):
+> Estos parámetros se pasan a CAWL junto con la tarea para reducir
+> alucinaciones del modelo de 7B. Sé conciso, concreto y específico.
+
+## Reglas para definir parámetros
+
+1. **Tech stack explícito.** Lenguaje, framework, base de datos.
+2. **Archivos existentes que NO deben modificarse.** Lista clara.
+3. **Convenciones de código.** Naming, estilo, imports.
+4. **Restricciones de seguridad.** No hardcodear credenciales, validar inputs.
+
+---
+
+## Formato
+
+```markdown
+# Parámetros del Proyecto
+
+## Tech Stack
+- [Lenguaje y versión]
+- [Framework]
+- [Base de datos]
+
+## Archivos a NO modificar
+- [ruta/archivo.py] — razón
+
+## Convenciones de código
+- [Naming, imports, formato]
+
+## Restricciones
+- [Regla 1]
+- [Regla 2]
+```
+"""
+
+_PARAMETROS_CONTEXTO = """\
+# Contexto del Proyecto
+
+> **PARA EL USUARIO:** Llena esta información antes de ejecutar tareas con CAWL.
+
+## Descripción del Proyecto
+[Qué hace este proyecto]
+
+## Estructura Actual del Proyecto
+```
+proyecto/
+├── (lista aquí las carpetas y archivos principales)
+```
+
+## Tech Stack
+- Lenguaje: [Python 3.10, JavaScript, etc.]
+- Framework: [Flask, Django, React, etc.]
+- Base de datos: [SQLite, PostgreSQL, etc.]
+
+## Archivos Importantes
+| Archivo | Qué hace |
+|---------|----------|
+| [ruta] | [descripción] |
+
+## Archivos a NO tocar
+| Archivo | Por qué |
+|---------|---------|
+| [ruta] | [razón] |
+
+## Convenciones de Código
+- Estilo: [snake_case, camelCase, etc.]
+- Imports: [orden, estilo]
+
+## Notas Adicionales
+[Cualquier otra información relevante]
+"""
+
+
+def _write_template_file(path: str, kind: str):
+    """Write a template file based on its kind."""
+    templates = {
+        "tareas": _TAREAS_PLANTILLA,
+        "PLANTILLA.md": _PARAMETROS_PLANTILLA,
+        "contexto.md": _PARAMETROS_CONTEXTO,
+    }
+    content = templates.get(kind, "")
+    if content:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
 
 
 def cmd_pull(args):
