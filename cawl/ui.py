@@ -636,7 +636,7 @@ class CawlWindow(QMainWindow):
         title = QLabel("CAWL")
         title.setObjectName("appTitle")
 
-        sub = QLabel("Control & Action Web Loop  ·  v0.2.0")
+        sub = QLabel("Control & Action Web Loop  ·  v0.3.0")
         sub.setObjectName("appSub")
 
         self.status_lbl = QLabel("● Listo")
