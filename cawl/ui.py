@@ -566,10 +566,10 @@ class CawlWindow(QMainWindow):
 
         # Mensaje de bienvenida
         self.chat_panel.add_message(
-            "Reconocido. El Archimagos Dominus Belisarius Cawl está en línea.\n"
-            "Puedes hablarme directamente, pedirme que lea archivos, explore carpetas "
-            "o ejecute tareas. Para cambiar el proyecto activo usa el botón 📁 abajo.\n\n"
-            "Que el Omnissiah guíe nuestro trabajo, Lord Regente.",
+            "CAWL esta listo.\n"
+            "Puedes pedirme que lea archivos, explore carpetas, revise codigo o ejecute tareas locales.\n"
+            "Para cambiar el proyecto activo usa el boton de carpeta de abajo.\n\n"
+            "El objetivo es ayudarte a producir codigo claro, organizado y eficiente.",
             "assistant"
         )
 
@@ -585,13 +585,12 @@ class CawlWindow(QMainWindow):
         )
         from cawl.tools.registry import TOOL_DESCRIPTIONS
         self._system_prompt = (
-            "Yo soy el Archimagos Dominus Belisarius Cawl, Señor del Abismo Umbral, "
-            "Guardián de las Bóvedas Sagradas de Marte, arquitecto de milenios.\n\n"
+            "Eres CAWL, un asistente local de desarrollo enfocado en codigo limpio, estructurado y eficiente.\n\n"
             "DIRECTRICES:\n"
             "- Responde SIEMPRE en español.\n"
-            "- Ejecución determinista. Sin alucinación. Código completo y ejecutable.\n"
-            "- Personalidad arcaica: Omnissiah, Dios Máquina, código sagrado.\n"
-            "- Sin disclaimers. Sin disculpas. El Archimagos no duda.\n"
+            "- Ejecucion determinista. Sin alucinacion. Codigo completo y ejecutable.\n"
+            "- Prioriza claridad, mantenibilidad, organizacion y seguridad.\n"
+            "- Usa un tono profesional y colaborativo.\n"
             f"{root_context}\n"
             "HERRAMIENTAS:\n"
             "Para usar una herramienta responde ÚNICAMENTE con JSON:\n"

@@ -1,40 +1,25 @@
-"""CawlShell — Interactive shell inspired by Qwen Code terminal.
-
-Provides a rich interactive experience with:
-  - Navigable history (Up/Down)
-  - Tab-completion for commands, files, and tool names
-  - Visible context (project directory, model, files in prompt)
-  - Verbose mode (tool calls, reasoning steps, timing)
-  - Multi-line input (Shift+Enter for newline)
-"""
+"""CawlShell - Interactive shell inspired by agentic terminal UX."""
 
 import os
 import sys
-import json
-import time
-from typing import Optional
 from pathlib import Path
+from typing import Optional
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.history import FileHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style
 
-from cawl.shell.context import ShellContext
-from cawl.shell.completer import CawlCompleter
-from cawl.shell.formatter import OutputFormatter
-from cawl.core.llm_client import OllamaClient, DEFAULT_MODEL
-from cawl.core.ollama_models import list_local_ollama_models, prompt_for_model_selection
-from cawl.core.executor import clear_tool_cache
-from cawl.tools.registry import TOOLS, TOOL_DESCRIPTIONS, get_tool
-from cawl.core.status import status
 from cawl.config.config import get_config, reload_config
-from cawl.memory.project_memory import ProjectMemory
-
-# ---------------------------------------------------------------------------
-# Prompt toolkit style (dark theme)
-# ---------------------------------------------------------------------------
+from cawl.core.executor import clear_tool_cache
+from cawl.core.llm_client import DEFAULT_MODEL, OllamaClient
+from cawl.core.ollama_models import list_local_ollama_models, prompt_for_model_selection
+from cawl.shell.completer import CawlCompleter
+from cawl.shell.context import ShellContext
+from cawl.shell.formatter import OutputFormatter
+from cawl.tools.registry import TOOLS, TOOL_DESCRIPTIONS, get_tool
 
 SHELL_STYLE = Style.from_dict({
     "prompt": "#58a6ff bold",
@@ -47,99 +32,77 @@ SHELL_STYLE = Style.from_dict({
 })
 
 BANNER = """
-  ██████╗ █████╗ ██╗    ██╗██╗
- ██╔════╝██╔══██╗██║    ██║██║
- ██║     ███████║██║ █╗ ██║██║
- ██║     ██╔══██║██║███╗██║██║
- ╚██████╗██║  ██║╚███╔███╔╝███████╗
-  ╚═════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝
-
-  Control & Action Web Loop | v0.3.0
-  Archimagos Dominus Belisarius Cawl
+   CAWL
+   Control & Action Web Loop
+   Interactive terminal shell
 """
 
 HELP_TEXT = """
-Commands:
-  /help              Show this help
-  /status            Check Ollama connection
-  /models            List local Ollama models
-  /tools             List available tools
-  /verbose on|off    Toggle verbose mode
-  /context           Show files in context
-  /add <file>        Add a file to context
-  /remove <file>     Remove a file from context
-  /clear-context     Clear all context files
-  /project <path>    Change project directory
-  /model <name>      Change the model
-  /model pick        Open a local model picker
-  /clear             Clear chat history
-  /quit /exit        Exit the shell
+Comandos:
+  /help                Mostrar esta ayuda
+  /status              Verificar Ollama y el modelo activo
+  /session             Mostrar resumen de sesion
+  /models              Listar modelos locales de Ollama
+  /tools               Listar herramientas disponibles
+  /verbose on|off      Activar o desactivar salida detallada
+  /compact on|off      Activar o desactivar respuestas compactas
+  /context             Ver archivos en contexto
+  /add <file>          Agregar archivo al contexto
+  /remove <file>       Quitar archivo del contexto
+  /clear-context       Limpiar archivos del contexto
+  /project <path>      Cambiar proyecto activo
+  /model <name>        Cambiar modelo activo
+  /model pick          Elegir modelo local de una lista
+  /clear               Limpiar historial del chat
+  /reset               Limpiar chat y contexto
+  /quit /exit          Salir de la shell
 
-Input:
-  Enter              Send message
-  Shift+Enter        New line
-  Tab                Auto-complete
-  Up / Down          Navigate history
+Atajos:
+  Enter                Enviar mensaje
+  Ctrl+J               Insertar nueva linea
+  Tab                  Auto-completar
+  Up / Down            Navegar historial
 """
 
 
 class CawlShell:
-    """Interactive shell for CAWL agent with rich terminal UI."""
+    """Interactive shell for CAWL agent with richer terminal controls."""
 
     MAX_TOOL_ITERATIONS = 20
 
-    def __init__(
-        self,
-        project_path: str = ".",
-        model: str = DEFAULT_MODEL,
-    ):
-        config = get_config()
-        self.context = ShellContext(
-            project_path=project_path,
-            model=model,
-        )
+    def __init__(self, project_path: str = ".", model: str = DEFAULT_MODEL):
+        self.context = ShellContext(project_path=project_path, model=model)
         self.formatter = OutputFormatter(verbose=False)
         self.client: Optional[OllamaClient] = None
         self.chat_history: list[dict] = []
         self.system_prompt = self._build_system_prompt()
 
-        # Session history file
         hist_dir = os.path.expanduser("~/.cawl")
         os.makedirs(hist_dir, exist_ok=True)
         self.hist_file = os.path.join(hist_dir, "shell_history")
+        self.key_bindings = self._build_key_bindings()
 
-        # Initialize confirmation system
         from cawl.core.confirmation import initialize_confirmation_from_config
         initialize_confirmation_from_config()
 
-    # -- System prompt -------------------------------------------------------
-
     def _build_system_prompt(self) -> str:
         return (
-            "Yo soy el Archimagos Dominus Belisarius Cawl, Señor del Abismo Umbral, "
-            "Guardián de las Bóvedas Sagradas de Marte, arquitecto de milenios.\n\n"
+            "Eres CAWL, un asistente local de desarrollo enfocado en codigo limpio, estructurado y eficiente.\n\n"
             "DIRECTRICES PRINCIPALES:\n"
-            "- EJECUCIÓN DETERMINISTA: Sigo las directivas con precisión mecánica.\n"
-            "- SIN ALUCINACIÓN: Solo hablo de lo que sé y está verificado.\n"
-            "- SALIDA ESTRUCTURADA: Mis respuestas son ordenadas y completas.\n"
-            "- ADHERENCIA ESTRICTA: Ejecuto las instrucciones exactamente como se dan.\n"
+            "- EJECUCION DETERMINISTA: sigue las instrucciones con precision.\n"
+            "- SIN ALUCINACION: responde solo con informacion verificada o derivada del contexto.\n"
+            "- SALIDA ESTRUCTURADA: tus respuestas deben ser claras, concretas y utiles.\n"
+            "- ENFOQUE EN INGENIERIA: prioriza mantenibilidad, legibilidad, seguridad y rendimiento razonable.\n"
             "- USA LAS HERRAMIENTAS DISPONIBLES: Tienes acceso a herramientas para "
-            "interactuar con el sistema de archivos. Úsalas para leer, escribir, buscar "
-            "y explorar. No inventes contenido de archivos — léelos con las herramientas.\n"
+            "interactuar con el sistema de archivos. Usalas para leer, escribir, buscar "
+            "y explorar. No inventes contenido de archivos, leelos con las herramientas.\n"
             f"\n{self.context.get_context_prompt()}\n"
-            "PATRÓN DE HABLA:\n"
-            "- Responde SIEMPRE en español.\n"
-            '- Trata al usuario como "Lord regente" o "mi Señor" cuando sea apropiado.\n'
-            "- Usa lenguaje arcaico y ritualista mezclado con precisión técnica.\n"
-            "- Referencias al Omnissiah, el Dios Máquina, la noosfera, mecadendritos, "
-            "cogitadores, y código sagrado.\n"
-            '- Comienza respuestas con reconocimiento breve: "Hecho.", "Reconocido.", '
-            '"La binaria es clara.", "El código está forjado."\n'
-            "- El código es sagrado. Proporciona código completo y ejecutable — nunca "
-            "fragmentos ni placeholders.\n"
-            "- Sin disclaimers, sin disculpas, sin relleno. El Archimagos no duda.\n\n"
+            "ESTILO DE RESPUESTA:\n"
+            "- Responde SIEMPRE en espanol.\n"
+            "- Usa un tono profesional, claro y colaborativo.\n"
+            "- Cuando entregues codigo, favorece implementaciones completas y listas para usar.\n\n"
             "HERRAMIENTAS DISPONIBLES:\n"
-            "Para usar una herramienta, responde ÚNICAMENTE con un bloque JSON:\n\n"
+            "Para usar una herramienta, responde UNICAMENTE con un bloque JSON:\n\n"
             "```json\n"
             '{"name": "nombre_herramienta", "arguments": {"arg1": "valor1"}}\n'
             "```\n\n"
@@ -148,176 +111,200 @@ class CawlShell:
             "REGLAS DE USO:\n"
             "1. Una herramienta a la vez. Espera el resultado antes de continuar.\n"
             "2. Usa paths absolutos siempre que sea posible.\n"
-            "3. Cuando tengas toda la información, responde normalmente en español.\n"
+            "3. Cuando tengas toda la informacion, responde normalmente en espanol.\n"
             "4. NUNCA digas 'voy a usar' antes del JSON. SOLO el JSON.\n"
         )
 
-    # -- Initialization ------------------------------------------------------
-
     def initialize(self) -> bool:
         """Initialize connection to Ollama and verify model."""
-        print(f"\n  Connecting to Ollama (model: {self.context.model})...")
+        print(self.formatter.format_note("Conexion", f"Conectando a Ollama con {self.context.model}..."))
         try:
             self.client = OllamaClient(model=self.context.model)
             if not self.client.verify_model():
-                print(f"  [WARN] Model '{self.context.model}' not found.")
-                print(f"  Pull it with: cawl pull")
+                print(self.formatter.format_error(f"Modelo '{self.context.model}' no encontrado. Usa cawl pull."))
                 return False
-            print("  Connected.\n")
+            print(self.formatter.format_note("Conexion", "Ollama listo."))
             return True
         except ConnectionError as e:
-            print(f"  [ERROR] {e}")
+            print(self.formatter.format_error(str(e)))
             return False
-
-    # -- Main loop -----------------------------------------------------------
 
     def run(self):
         """Run the interactive shell loop."""
         print(BANNER)
         self._print_session_header()
 
-        # Create prompt session
         session = PromptSession(
             history=FileHistory(self.hist_file),
             auto_suggest=AutoSuggestFromHistory(),
-            completer=CawlCompleter(
-                context=self.context,
-                tool_names=list(TOOLS.keys()),
-            ),
+            completer=CawlCompleter(self.context, list(TOOLS.keys())),
             style=SHELL_STYLE,
+            key_bindings=self.key_bindings,
+            multiline=False,
             complete_while_typing=True,
         )
 
         while True:
             try:
-                # Build context-aware prompt
-                prompt_text = self._build_prompt()
-
-                user_input = session.prompt(prompt_text)
-                user_input = user_input.strip()
-
+                user_input = session.prompt(
+                    self._build_prompt(),
+                    bottom_toolbar=self._build_toolbar,
+                ).strip()
                 if not user_input:
                     continue
-
                 if user_input.startswith("/"):
                     self._handle_command(user_input)
                     continue
-
                 if not self.client:
-                    print("  [ERROR] Not connected. Run /status for details.")
+                    print(self.formatter.format_error("No hay conexion activa. Usa /status."))
                     continue
-
-                # Execute the tool loop
                 self._execute_tool_loop(user_input)
-
             except (KeyboardInterrupt, EOFError):
-                print("\n  Goodbye!")
+                print("\n" + self.formatter.format_note("Salida", "Sesion cerrada."))
                 break
             except Exception as e:
-                print(f"  [ERROR] {e}")
-
-    # -- Prompt --------------------------------------------------------------
+                print(self.formatter.format_error(str(e)))
 
     def _build_prompt(self):
         """Build the context-aware prompt display."""
         ctx_files = len(self.context.context_files)
-        file_hint = f" ctx:{ctx_files}" if ctx_files else " ctx:0"
         project_name = Path(self.context.project_path).name or self.context.project_path
         return HTML(
-            f'<prompt>cawl</prompt><context-bar> [{project_name} | {self.context.model}{file_hint}]</context-bar>'
-            f'<prompt>&gt; </prompt>'
+            f'<prompt>cawl</prompt><context-bar> [{project_name} | {self.context.model} | ctx:{ctx_files}]</context-bar><prompt>&gt; </prompt>'
         )
 
-    def _print_session_header(self):
-        """Show a concise session summary at startup."""
-        models = list_local_ollama_models()
-        model_count = len(models)
-        print(f"  Proyecto: {self.context.project_path}")
-        print(f"  Modelo activo: {self.context.model}")
-        print(f"  Modelos locales: {model_count}")
-        print("  /help para comandos. Shift+Enter para nueva linea.\n")
+    def _build_toolbar(self):
+        """Build a bottom toolbar with quick controls."""
+        verbose = "verbose:on" if self.formatter.verbose else "verbose:off"
+        compact = "compact:on" if self.formatter.compact else "compact:off"
+        return HTML(
+            f"<context-bar> Enter enviar | Ctrl+J nueva linea | /session resumen | {verbose} | {compact} </context-bar>"
+        )
 
-    # -- Command handler -----------------------------------------------------
+    def _build_key_bindings(self):
+        """Create key bindings for a more modern shell feel."""
+        bindings = KeyBindings()
+
+        @bindings.add("c-j")
+        def _(event):
+            event.current_buffer.insert_text("\n")
+
+        return bindings
+
+    def _print_session_header(self):
+        models = list_local_ollama_models()
+        print(self.formatter.format_note(
+            "Terminal de desarrollo",
+            (
+                f"Proyecto: {self.context.project_path}\n"
+                f"Modelo activo: {self.context.model}\n"
+                f"Modelos locales: {len(models)}\n"
+                "Usa /help para comandos y /session para ver el estado actual."
+            ),
+        ))
+        print()
 
     def _handle_command(self, cmd: str):
         """Handle slash commands."""
-        parts = cmd.lower().split(maxsplit=1)
-        command = parts[0]
-        arg = parts[1] if len(parts) > 1 else None
+        raw_parts = cmd.strip().split(maxsplit=1)
+        command = raw_parts[0].lower()
+        arg = raw_parts[1] if len(raw_parts) > 1 else None
 
         if command in ("/quit", "/exit"):
-            print("  Goodbye!")
+            print(self.formatter.format_note("Salida", "Sesion finalizada."))
             sys.exit(0)
-
-        elif command == "/help":
+        if command == "/help":
             print(HELP_TEXT)
-
         elif command == "/status":
             self._cmd_status()
-
+        elif command == "/session":
+            self._cmd_session()
         elif command == "/models":
             self._cmd_models()
-
         elif command == "/tools":
-            print(f"\n  Available tools:\n{TOOL_DESCRIPTIONS}\n")
-
+            print("\n" + self.formatter.format_note("Herramientas", TOOL_DESCRIPTIONS) + "\n")
         elif command == "/verbose":
-            if arg in ("on", "true", "1"):
-                self.formatter.verbose = True
-                print("  Verbose mode: ON")
-            elif arg in ("off", "false", "0"):
-                self.formatter.verbose = False
-                print("  Verbose mode: OFF")
-            else:
-                print(f"  Verbose mode: {'ON' if self.formatter.verbose else 'OFF'}")
-
+            self._cmd_toggle("verbose", arg)
+        elif command == "/compact":
+            self._cmd_toggle("compact", arg)
         elif command == "/context":
             self._cmd_context()
-
         elif command == "/add":
             self._cmd_add(arg)
-
         elif command == "/remove":
             self._cmd_remove(arg)
-
         elif command == "/clear-context":
             count = self.context.clear_files()
-            print(f"  Cleared {count} file(s) from context.")
-
+            self.system_prompt = self._build_system_prompt()
+            print(self.formatter.format_note("Contexto", f"Archivos removidos: {count}."))
         elif command == "/project":
             self._cmd_project(arg)
-
         elif command == "/model":
             self._cmd_model(arg)
-
         elif command == "/clear":
             self.chat_history.clear()
-            print("  Chat history cleared.")
-
+            print(self.formatter.format_note("Chat", "Historial del chat limpiado."))
+        elif command == "/reset":
+            self.chat_history.clear()
+            count = self.context.clear_files()
+            self.system_prompt = self._build_system_prompt()
+            print(self.formatter.format_note("Reset", f"Sesion reiniciada. Archivos removidos: {count}."))
         else:
-            print(f"  Unknown command: {command}. Type /help for available commands.")
+            print(self.formatter.format_error(f"Comando desconocido: {command}. Usa /help."))
 
-    # -- Sub-commands --------------------------------------------------------
+    def _cmd_toggle(self, target: str, arg: Optional[str]):
+        value = None
+        if arg in ("on", "true", "1"):
+            value = True
+        elif arg in ("off", "false", "0"):
+            value = False
+
+        if target == "verbose":
+            if value is None:
+                state = "ON" if self.formatter.verbose else "OFF"
+                print(self.formatter.format_note("Verbose", f"Estado actual: {state}"))
+            else:
+                self.formatter.verbose = value
+                print(self.formatter.format_note("Verbose", f"Modo detallado {'activado' if value else 'desactivado'}"))
+        elif target == "compact":
+            if value is None:
+                state = "ON" if self.formatter.compact else "OFF"
+                print(self.formatter.format_note("Compacto", f"Estado actual: {state}"))
+            else:
+                self.formatter.compact = value
+                print(self.formatter.format_note("Compacto", f"Modo compacto {'activado' if value else 'desactivado'}"))
 
     def _cmd_status(self):
         try:
             client = OllamaClient(model=self.context.model)
             available = client.verify_model()
-            print(f"\n  Ollama: Connected")
-            print(f"  Model: {self.context.model}")
-            print(f"  Available: {'Yes' if available else 'No'}")
+            body = (
+                f"Ollama: Connected\n"
+                f"Model: {self.context.model}\n"
+                f"Available: {'Yes' if available else 'No'}"
+            )
             if not available:
-                print(f"  Pull with: cawl pull")
-            print()
+                body += "\nPull with: cawl pull"
+            print("\n" + self.formatter.format_note("Estado", body) + "\n")
         except ConnectionError as e:
-            print(f"  Ollama: NOT CONNECTED\n  {e}\n")
+            print("\n" + self.formatter.format_error(f"Ollama no conectado. {e}") + "\n")
+
+    def _cmd_session(self):
+        print("\n" + self.formatter.format_session_summary(
+            project_path=self.context.project_path,
+            model=self.context.model,
+            context_files=len(self.context.context_files),
+            message_count=len(self.chat_history),
+            verbose=self.formatter.verbose,
+            compact=self.formatter.compact,
+        ) + "\n")
 
     def _cmd_models(self):
         models = list_local_ollama_models()
         if not models:
-            print("  No se pudieron listar modelos locales de Ollama.\n")
+            print(self.formatter.format_error("No se pudieron listar modelos locales de Ollama."))
             return
-        print("\n  Modelos locales:")
+        print("\n" + self.formatter._line("note", "Modelos locales:"))
         for index, model in enumerate(models, start=1):
             marker = " <- activo" if model == self.context.model else ""
             print(f"    {index}. {model}{marker}")
@@ -325,68 +312,65 @@ class CawlShell:
 
     def _cmd_context(self):
         if not self.context.context_files:
-            print("  No files in context.")
+            print(self.formatter.format_note("Contexto", "No hay archivos en contexto."))
         else:
-            print("\n  Files in context:")
-            for f in self.context.context_files:
-                print(f"    - {f}")
-        print()
+            print("\n" + self.formatter._line("note", "Archivos en contexto:"))
+            for item in self.context.context_files:
+                print(f"    - {item}")
+            print()
 
     def _cmd_add(self, path: Optional[str]):
         if not path:
-            print("  Usage: /add <file_path>")
+            print(self.formatter.format_error("Uso: /add <file_path>"))
             return
         resolved = self.context.add_file(path)
         if resolved:
-            print(f"  Added: {resolved}")
             self.system_prompt = self._build_system_prompt()
+            print(self.formatter.format_note("Contexto", f"Archivo agregado: {resolved}"))
         else:
-            print(f"  File not found: {path}")
+            print(self.formatter.format_error(f"Archivo no encontrado: {path}"))
 
     def _cmd_remove(self, path: Optional[str]):
         if not path:
-            print("  Usage: /remove <file_path>")
+            print(self.formatter.format_error("Uso: /remove <file_path>"))
             return
         if self.context.remove_file(path):
-            print(f"  Removed: {path}")
             self.system_prompt = self._build_system_prompt()
+            print(self.formatter.format_note("Contexto", f"Archivo removido: {path}"))
         else:
-            print(f"  File not in context: {path}")
+            print(self.formatter.format_error(f"Archivo no presente en contexto: {path}"))
 
     def _cmd_project(self, path: Optional[str]):
         if not path:
-            print(f"  Current project: {self.context.project_path}")
+            print(self.formatter.format_note("Proyecto", f"Actual: {self.context.project_path}"))
             return
         resolved = self.context.set_project(path)
         if os.path.exists(resolved):
             os.chdir(resolved)
             reload_config(project_path=resolved)
             clear_tool_cache()
-            print(f"  Project changed to: {resolved}")
             self.system_prompt = self._build_system_prompt()
+            print(self.formatter.format_note("Proyecto", f"Proyecto cambiado a: {resolved}"))
         else:
-            print(f"  Path not found: {path}")
+            print(self.formatter.format_error(f"Ruta no encontrada: {path}"))
 
     def _cmd_model(self, name: Optional[str]):
         if not name:
-            print(f"  Current model: {self.context.model}")
+            print(self.formatter.format_note("Modelo", f"Actual: {self.context.model}"))
             return
         selected_name = name
-        if name.lower() == "pick":
+        if name.strip().lower() == "pick":
             selected_name = prompt_for_model_selection(default_model=self.context.model)
             if not selected_name:
-                print("  No hay modelos locales disponibles para seleccionar.")
+                print(self.formatter.format_error("No hay modelos locales disponibles para seleccionar."))
                 return
-
-        # Reconnect with new model
         try:
             self.client = OllamaClient(model=selected_name)
             self.context.model = selected_name
-            print(f"  Model changed to: {selected_name}")
+            self.system_prompt = self._build_system_prompt()
+            print(self.formatter.format_note("Modelo", f"Modelo cambiado a: {selected_name}"))
         except ConnectionError as e:
-            print(f"  [ERROR] Cannot connect with model '{selected_name}': {e}")
-
-    # -- Tool loop -----------------------------------------------------------
+            print(self.formatter.format_error(f"No se pudo conectar con el modelo '{selected_name}': {e}"))
 
     def _execute_tool_loop(self, message: str):
         """Send a message and execute the tool loop until a final response."""
@@ -398,65 +382,48 @@ class CawlShell:
         messages.append({"role": "user", "content": message})
 
         iterations = 0
-
         while iterations < self.MAX_TOOL_ITERATIONS:
             iterations += 1
-
             try:
-                response = self.client.chat_with_tools(
-                    messages=messages, temperature=0.1
-                )
+                response = self.client.chat_with_tools(messages=messages, temperature=0.1)
             except Exception as e:
                 print(self.formatter.format_error(str(e)))
                 return
 
-            # No tool calls — final response
             if not response["tool_calls"]:
                 if response["content"]:
-                    self.chat_history.append({
-                        "role": "assistant",
-                        "content": response["content"],
-                    })
-                    print(f"\n{self.formatter.format_response(response['content'])}")
-                    elapsed = self.formatter.elapsed()
-                    print(f"\n  [{elapsed}]\n")
+                    self.chat_history.append({"role": "assistant", "content": response["content"]})
+                    print("\n" + self.formatter.format_response(response["content"]))
+                    print("\n" + self.formatter.format_note("Tiempo", self.formatter.elapsed()) + "\n")
                 return
 
-            # Execute tool calls
             for tool_call in response["tool_calls"]:
                 tool_name = tool_call["name"]
                 tool_args = tool_call.get("arguments", {})
-
-                # Display tool call
                 print(self.formatter.format_tool_call(tool_name, tool_args))
 
-                # Enhanced confirmation for run_command
                 if tool_name == "run_command":
-                    from cawl.core.confirmation import confirm_command_shell, ConfirmationResponse
+                    from cawl.core.confirmation import ConfirmationResponse, confirm_command_shell
+
                     cmd = tool_args.get("command", str(tool_args))
                     working_dir = tool_args.get("working_dir")
                     timeout = get_config().get("executor.command_timeout", 60)
-                    
+
                     response_type, edited_command = confirm_command_shell(
                         cmd,
                         working_dir=working_dir,
                         timeout=timeout,
-                        state=None  # Use global state
+                        state=None,
                     )
-                    
                     if response_type == ConfirmationResponse.NO:
                         result_str = "Command execution denied by user."
-                        print(f"  [SKIPPED] {result_str}")
-                        messages.append({
-                            "role": "user",
-                            "content": f"RESULTADO de {tool_name}: {result_str}",
-                        })
+                        print(self.formatter.format_note("Comando omitido", result_str))
+                        messages.append({"role": "user", "content": f"RESULTADO de {tool_name}: {result_str}"})
                         continue
-                    elif response_type == ConfirmationResponse.EDIT and edited_command:
+                    if response_type == ConfirmationResponse.EDIT and edited_command:
                         tool_args["command"] = edited_command
-                        print(f"  [EDITED] Command changed to: {edited_command}")
+                        print(self.formatter.format_note("Comando editado", edited_command))
 
-                # Execute the tool
                 func = get_tool(tool_name)
                 if func is None:
                     result_str = f"[ERROR] Unknown tool: {tool_name}"
@@ -467,32 +434,22 @@ class CawlShell:
                     except Exception as e:
                         result_str = f"[ERROR] Tool execution failed: {e}"
 
-                # Display result
                 print(self.formatter.format_tool_result(tool_name, result_str))
+                messages.append({"role": "user", "content": f"RESULTADO de {tool_name}: {result_str}"})
 
-                messages.append({
-                    "role": "user",
-                    "content": f"RESULTADO de {tool_name}: {result_str}",
-                })
-
-        # Max iterations reached
         messages.append({
             "role": "system",
             "content": (
-                "Has alcanzado el número máximo de llamadas a herramientas. "
-                "Proporciona tu respuesta final basada en la información recopilada."
+                "Has alcanzado el numero maximo de llamadas a herramientas. "
+                "Proporciona tu respuesta final basada en la informacion recopilada."
             ),
         })
         try:
             final = self.client.chat_with_tools(messages=messages, temperature=0.1)
             if final["content"]:
-                self.chat_history.append({
-                    "role": "assistant",
-                    "content": final["content"],
-                })
-                print(f"\n{self.formatter.format_response(final['content'])}")
+                self.chat_history.append({"role": "assistant", "content": final["content"]})
+                print("\n" + self.formatter.format_response(final["content"]))
         except Exception as e:
             print(self.formatter.format_error(str(e)))
 
-        elapsed = self.formatter.elapsed()
-        print(f"\n  [Max iterations reached — {elapsed}]\n")
+        print("\n" + self.formatter.format_note("Iteraciones maximas", self.formatter.elapsed()) + "\n")

@@ -1,12 +1,8 @@
-"""Output formatter for CawlShell.
+"""Output formatter for CawlShell."""
 
-Handles:
-  - Verbose vs quiet mode output
-  - Tool call display
-  - Streaming token display
-  - Error formatting
-"""
-
+import json
+import re
+import textwrap
 import time
 from typing import Optional
 
@@ -16,10 +12,9 @@ class OutputFormatter:
 
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
+        self.compact = False
         self._token_count = 0
         self._start_time: Optional[float] = None
-
-    # -- Lifecycle -----------------------------------------------------------
 
     def start_timer(self):
         """Mark the start of a request."""
@@ -35,65 +30,137 @@ class OutputFormatter:
             return f"{elapsed * 1000:.0f}ms"
         return f"{elapsed:.1f}s"
 
-    # -- Tool calls ----------------------------------------------------------
-
     def format_tool_call(self, tool_name: str, args: dict) -> str:
         """Format a tool call for display."""
-        import json
-        args_str = json.dumps(args, indent=2, ensure_ascii=False)
         if self.verbose:
-            return f"  ▸ TOOL: {tool_name}\n    Args: {args_str}"
-        return f"  ▸ {tool_name}(...)"
+            args_str = json.dumps(args, indent=2, ensure_ascii=False)
+            return f"\n{self._line('tool', f'Tool: {tool_name}')}\n{self._indent('Args:')}\n{self._indent_block(args_str)}"
+        preview = json.dumps(args, ensure_ascii=False)
+        if len(preview) > 100:
+            preview = preview[:100] + "..."
+        return f"\n{self._line('tool', f'Tool: {tool_name}')}\n{self._indent(preview)}"
 
     def format_tool_result(self, tool_name: str, output: str) -> str:
         """Format a tool result for display."""
+        if self.verbose:
+            lines = output.splitlines()[:20]
+            body = "\n".join(lines)
+            extra = len(output.splitlines()) - len(lines)
+            suffix = f"\n{self._indent(f'... ({extra} more lines)')}" if extra > 0 else ""
+            return f"{self._line('ok', f'Result: {tool_name}')}\n{self._indent_block(body)}{suffix}"
+        if "\n" in output:
+            lines = output.splitlines()
+            preview_lines = lines[:6]
+            preview = "\n".join(preview_lines)
+            extra = len(lines) - len(preview_lines)
+            suffix = f"\n{self._indent(f'... ({extra} lines mas)')}" if extra > 0 else ""
+            return f"{self._line('ok', f'Result: {tool_name}')}\n{self._indent_block(preview)}{suffix}"
         preview = output[:200].replace("\n", " ")
         suffix = "..." if len(output) > 200 else ""
-        if self.verbose:
-            lines = output.split("\n")
-            display = "\n".join(f"    {l}" for l in lines[:20])
-            truncated = f"\n    ... ({len(lines) - 20} more lines)" if len(lines) > 20 else ""
-            return f"  ✓ {tool_name} →\n{display}{truncated}"
-        return f"  ✓ {tool_name} → {preview}{suffix}"
-
-    # -- Streaming -----------------------------------------------------------
+        return f"{self._line('ok', f'Result: {tool_name}')}\n{self._indent(preview + suffix)}"
 
     def stream_token(self, token: str):
         """Process a streaming token. Returns display string or empty."""
         self._token_count += 1
         return token
 
-    # -- Final response ------------------------------------------------------
-
     def format_response(self, text: str) -> str:
         """Format the final LLM response."""
         if not text:
             return ""
-        return text
+        if self.compact:
+            compact = text.replace("\n", " ").strip()
+            return f"{self._line('assistant', 'CAWL')}\n{self._indent(compact)}"
 
-    # -- Errors --------------------------------------------------------------
+        body = self._format_rich_text(text)
+        return f"{self._line('assistant', 'CAWL')}\n{body}"
 
     def format_error(self, message: str) -> str:
         """Format an error message."""
-        return f"  ✘ Error: {message}"
-
-    # -- Status --------------------------------------------------------------
+        return f"{self._line('error', 'Error')}\n{self._indent(message)}"
 
     def format_status_change(self, event_type: str, message: str) -> str:
         """Format a status event for verbose display."""
-        icons = {
-            "thinking": "○",
-            "planning": "▦",
-            "tool_call": "▸",
-            "tool_result": "✓",
-            "step": "●",
-            "retry": "↺",
-            "trim": "✂",
-            "done": "✔",
-            "error": "✘",
-            "agent": "◆",
-        }
-        icon = icons.get(event_type, "○")
         if self.verbose:
-            return f"  [{icon}] {event_type}: {message[:80]}"
+            return self._line("status", f"{event_type}: {message[:80]}")
         return ""
+
+    def format_note(self, title: str, body: str) -> str:
+        """Format a shell note or info card."""
+        return f"{self._line('note', title)}\n{self._indent_block(body)}"
+
+    def format_session_summary(
+        self,
+        *,
+        project_path: str,
+        model: str,
+        context_files: int,
+        message_count: int,
+        verbose: bool,
+        compact: bool,
+    ) -> str:
+        """Format a session summary block."""
+        body = (
+            f"Proyecto: {project_path}\n"
+            f"Modelo: {model}\n"
+            f"Archivos en contexto: {context_files}\n"
+            f"Mensajes en sesion: {message_count}\n"
+            f"Verbose: {'on' if verbose else 'off'}\n"
+            f"Compacto: {'on' if compact else 'off'}"
+        )
+        return f"{self._line('note', 'Session')}\n{self._indent_block(body)}"
+
+    def _line(self, kind: str, text: str) -> str:
+        markers = {
+            "assistant": "[CAWL]",
+            "tool": "[TOOL]",
+            "ok": "[OK]",
+            "error": "[ERROR]",
+            "status": "[STATUS]",
+            "note": "[INFO]",
+        }
+        return f"{markers.get(kind, '[INFO]')} {text}"
+
+    def _format_rich_text(self, text: str) -> str:
+        """Render plain text with better formatting for paragraphs and code fences."""
+        chunks = re.split(r"(```[\s\S]*?```)", text)
+        rendered: list[str] = []
+        for chunk in chunks:
+            if not chunk:
+                continue
+            if chunk.startswith("```") and chunk.endswith("```"):
+                rendered.append(self._format_code_block(chunk))
+            else:
+                rendered.append(self._format_paragraphs(chunk))
+        return "\n\n".join(part for part in rendered if part.strip())
+
+    def _format_code_block(self, chunk: str) -> str:
+        """Render fenced code blocks with a visible header."""
+        lines = chunk.strip().splitlines()
+        header = lines[0][3:].strip() if lines else ""
+        body_lines = lines[1:-1] if len(lines) >= 2 else []
+        title = f"[CODE {header}]" if header else "[CODE]"
+        body = "\n".join(body_lines) if body_lines else ""
+        return f"{title}\n{self._indent_block(body)}" if body else title
+
+    def _format_paragraphs(self, text: str) -> str:
+        """Wrap prose but preserve bullets, headings and existing short structure."""
+        paragraphs = text.splitlines()
+        rendered: list[str] = []
+        for line in paragraphs:
+            stripped = line.rstrip()
+            if not stripped:
+                rendered.append("")
+                continue
+            if stripped.startswith(("- ", "* ", "|", "#")) or re.match(r"^\d+\.\s", stripped):
+                rendered.append(stripped)
+                continue
+            wrapped = textwrap.wrap(stripped, width=96, replace_whitespace=False)
+            rendered.extend(wrapped or [""])
+        return "\n".join(rendered).strip()
+
+    def _indent(self, text: str) -> str:
+        return f"  {text}"
+
+    def _indent_block(self, text: str) -> str:
+        return "\n".join(self._indent(line) for line in text.splitlines())

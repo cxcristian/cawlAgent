@@ -1,79 +1,38 @@
-# 🤖 CAWL — Agente Local Inteligente
+# CAWL - Asistente Local de Desarrollo
 
-**CAWL** (Control & Action Web Loop) es un sistema de agente autónomo que ejecuta tareas complejas en tu máquina local usando modelos de lenguaje abiertos vía **Ollama** (Qwen, Llama, Mistral, etc.).
+**CAWL** (Control & Action Web Loop) es un asistente local orientado a desarrollo de software. Ejecuta tareas con modelos abiertos via **Ollama** y trabaja sobre archivos reales del proyecto para producir cambios estructurados, claros y eficientes.
 
-> **v0.3.0** — Sin API keys. Sin costos. Tu código nunca sale de tu máquina.
+> v0.3.0 - Sin API keys. Sin costos por nube. Tu codigo se queda en tu maquina.
 
----
+## Caracteristicas
 
-## ✨ Características
-
-| Feature | Descripción |
+| Feature | Descripcion |
 |---|---|
-| 🐚 **CawlShell** | Shell interactiva con historial navegable, tab-completion, contexto visible y verbose mode |
-| 🧠 **Planner → Executor** | Las tareas se descomponen automáticamente en pasos ejecutables |
-| 🤖 **Multi-Agente** | Orquestador + Workers especializados, secuencial o en paralelo |
-| 💾 **Memoria por Proyecto** | Cada proyecto tiene su `.cawl/memory.json` aislado |
-| ⚡ **Status en Tiempo Real** | Spinner animado en terminal y burbuja de progreso en UI |
-| 🔄 **Retry Automático** | Re-prompt al modelo si devuelve JSON inválido (configurable) |
-| 🛡️ **Validación de auto-write** | Rechaza respuestas de razonamiento al escribir archivos (reintento automático) |
-| 📡 **Streaming con throttle** | Tokens en tiempo real sin saturar la terminal (200ms entre updates) |
-| ⏱️ **Timeout en Comandos** | `run_command` se mata automáticamente después de 60s (configurable) |
-| 🌐 **Búsqueda Web** | Herramienta `search_web` vía DuckDuckGo, sin API key |
-| 👁️ **Modo Watch** | Re-ejecuta una tarea automáticamente cada vez que guardas el `.md` |
-| 🖥️ **GUI incluida** | Chat con tema oscuro, árbol de archivos y progreso en tiempo real |
-| 🔒 **Confirmación de seguridad** | Confirmación antes de ejecutar comandos de shell (CLI, UI y Shell) |
-| ⚙️ **Config flexible** | Overrides por env vars, por proyecto, o por usuario |
+| Shell interactiva | Terminal mejorada con historial, autocompletado, resumen de sesion y modos `verbose` / `compact` |
+| Planner -> Executor | Descompone tareas en pasos ejecutables y luego los resuelve |
+| Multi-agente | Orquestador con workers especializados, secuencial o en paralelo |
+| Memoria por proyecto | Cada proyecto mantiene su propia memoria en `.cawl/memory.json` |
+| Estado en tiempo real | Spinner en terminal y burbuja de estado en la UI |
+| Selector de modelos | Detecta modelos locales de Ollama y permite elegir uno al iniciar |
+| Confirmacion de comandos | Pide autorizacion antes de ejecutar comandos sensibles |
+| Config flexible | Overrides por archivo, proyecto o variables de entorno |
 
----
+## Filosofia
 
-## 🏗️ Arquitectura
+CAWL ya no usa una personalidad teatral. El agente esta enfocado en:
 
-```
-Usuario
-  │
-  ▼
-┌─────────────────────────────────────────┐
-│            CawlAgent / REPL             │  ← terminal o GUI
-│   chat_with_tools_loop()                │
-│   _trim_history() (max 12k chars)       │
-└──────────────┬──────────────────────────┘
-               │
-       ┌───────▼───────┐
-       │  StatusEmitter │  ← pub/sub thread-safe
-       │  (status.py)   │     spinner terminal
-       └───────┬────────┘     burbuja UI
-               │
-    ┌──────────▼──────────┐
-    │   Planner → Executor │  ← loop.py
-    │   plan → steps       │
-    └──────────┬───────────┘
-               │
-    ┌──────────▼──────────┐
-    │   Tool Registry      │
-    │   read_file          │
-    │   write_file         │
-    │   list_files         │
-    │   grep_search        │
-    │   glob_files         │
-    │   run_command        │
-    │   search_web         │
-    └─────────────────────┘
+- Codigo bien estructurado
+- Salidas claras y organizadas
+- Cambios mantenibles
+- Uso eficiente de herramientas
+- Contexto real antes de responder
 
-Multi-Agente:
-  OrchestratorAgent
-    ├── descompone tarea con LLM
-    ├── WorkerAgent [coder]
-    ├── WorkerAgent [reviewer]     ← secuencial o paralelo
-    └── WorkerAgent [documenter]
-          └── consolida resultados
-```
+## Instalacion
 
----
+Requisitos:
 
-## 🚀 Instalación
-
-**Requisitos:** Python 3.10+, [Ollama](https://ollama.ai) instalado y corriendo.
+- Python 3.10+
+- [Ollama](https://ollama.ai) instalado y corriendo
 
 ```bash
 git clone <repo>
@@ -83,439 +42,244 @@ ollama pull qwen2.5-coder:7b
 cawl status
 ```
 
-### Inicializar un nuevo proyecto (recomendado)
+## Flujo recomendado
 
 ```bash
 cd mi_proyecto
 cawl init
 ```
 
-Esto crea:
+Luego:
 
-```
-mi_proyecto/
-├── .cawl/               # Memoria y config del agente (automático)
-├── tareas/              # Tareas para CAWL
-│   └── PLANTILLA.md     # Guía para que una IA grande escriba tareas ejecutables
-└── parametros/          # Contexto y restricciones
-    ├── PLANTILLA.md     # Guía para definir parámetros del proyecto
-    └── contexto.md      # ← Rellena con info real de tu proyecto
-```
+1. Completa `parametros/contexto.md`
+2. Crea una tarea en `tareas/`
+3. Ejecuta `cawl run --task tareas/mi_tarea.md`
 
-**Flujo de trabajo recomendado:**
-1. `cawl init` — crea la estructura
-2. Edita `parametros/contexto.md` con info de tu proyecto
-3. Pide a Claude/GPT que genere una tarea en `tareas/` siguiendo `PLANTILLA.md`
-4. `cawl run --task tareas/mi_tarea.md` — CAWL ejecuta
+## Comandos
 
-Debería mostrar:
-```
-Ollama: Connected
-Model: qwen2.5-coder:7b
-Available: Yes
-```
-
-### Error: `cawl: command not found`
-
-El directorio `Scripts` de Python no está en el PATH. Agrégalo:
-
-```bash
-# Encuentra la ruta
-python -c "import sys, os; print(os.path.join(sys.prefix, 'Scripts'))"
-
-# Agrégala al PATH del sistema (Windows):
-# Win+R → sysdm.cpl → Opciones avanzadas → Variables de entorno → Path → Nuevo
-```
-
----
-
-## ⚙️ Configuración
-
-`cawl/config/config.yaml`:
-
-```yaml
-executor:
-  model: "qwen2.5-coder:7b"
-  confirm_commands: true      # pedir confirmación antes de run_command
-  max_tool_iterations: 20     # máx llamadas a herramientas por turno
-  max_history_chars: 12000    # límite de caracteres en historial REPL
-  max_history_turns: 4        # turnos mínimos a conservar al comprimir
-  max_json_retries: 2         # reintentos por JSON inválido
-  command_timeout: 60         # timeout por defecto para run_command (segundos)
-  streaming: true             # habilitar streaming token a token en REPL
-  streaming_throttle_ms: 200  # ms mínimos entre updates del spinner
-
-planner:
-  model: "qwen2.5-coder:7b"
-
-tools:
-  max_read_size: 102400        # límite de lectura: 100 KB
-  max_file_write_size: 1048576 # límite de escritura: 1 MB
-
-memory:
-  max_runs: 20                 # runs máximos almacenados por proyecto
-  max_task_truncate: 200       # chars máximos para task en memoria
-  max_output_truncate: 300     # chars máximos para output por step
-
-paths:
-  base: "."
-  memory: ".cawl"
-```
-
-### Overrides por capas (mayor prioridad gana)
-
-1. **Variables de entorno**: `CAWL_EXECUTOR__MODEL=qwen2.5:14b`
-2. **Config por proyecto**: `{proyecto}/.cawl/config.yaml`
-3. **Config por usuario**: `~/.cawl/config.yaml`
-4. **Config empaquetado**: `cawl/config/config.yaml`
-
----
-
-## 📖 Comandos
-
-### Shell interactiva principal (modo por defecto)
+### Shell interactiva principal
 
 ```bash
 cawl run
 ```
 
-Entra en la shell interactiva principal con historial, autocompletado, contexto visible y soporte de herramientas.
+Abre la shell principal con:
 
-```
-cawl> listar los archivos en src/
-⣷ ►  read_file(...)
-cawl> buscar todos los TODO en el código
-```
+- Historial persistente
+- Tab completion
+- Prompt con proyecto, modelo y cantidad de archivos en contexto
+- Toolbar inferior con atajos
+- Comandos de control de sesion
 
-Comandos de la shell:
+Comandos utiles:
 
-| Comando | Acción |
+| Comando | Accion |
 |---|---|
 | `/help` | Mostrar ayuda |
-| `/status` | Verificar conexión a Ollama |
-| `/tools` | Listar herramientas disponibles |
-| `/clear` | Limpiar historial de chat |
+| `/status` | Verificar Ollama y el modelo activo |
+| `/session` | Mostrar resumen de sesion |
+| `/models` | Listar modelos locales |
+| `/context` | Ver archivos en contexto |
+| `/add <file>` | Agregar archivo al contexto |
+| `/remove <file>` | Remover archivo del contexto |
+| `/clear-context` | Limpiar contexto |
+| `/verbose on|off` | Alternar salida detallada |
+| `/compact on|off` | Alternar salida compacta |
+| `/model pick` | Elegir un modelo local |
+| `/project <path>` | Cambiar proyecto activo |
+| `/clear` | Limpiar historial del chat |
+| `/reset` | Limpiar chat y contexto |
 | `/quit` | Salir |
 
-### Alias interactivo: `cawl shell`
+Atajos:
+
+- `Enter` envia
+- `Ctrl+J` inserta nueva linea
+- `Tab` autocompleta
+- `Up / Down` recorre historial
+
+### Alias interactivo
 
 ```bash
 cawl shell
 ```
 
-`cawl shell` sigue disponible, pero ahora actúa como alias de `cawl run` y abre la misma experiencia interactiva.
+Abre la misma experiencia interactiva que `cawl run`.
 
-| Feature | Cómo |
-|---|---|
-| Historial navegable | `↑` / `↓` |
-| Tab-completion | `Tab` (comandos slash, archivos del proyecto, nombres de herramientas) |
-| Nueva línea | `Shift+Enter` |
-| Auto-sugerencias | Historial previo aparece en gris |
-| Contexto visible | El prompt muestra `[N file(s)]` cuando hay archivos en contexto |
-| Verbose mode | `/verbose on` — muestra tool calls con argumentos y resultados completos |
-
-Comandos de la Shell:
-
-| Comando | Acción |
-|---|---|
-| `/help` | Mostrar ayuda |
-| `/status` | Verificar conexión a Ollama |
-| `/tools` | Listar herramientas |
-| `/verbose on\|off` | Toggle modo detallado |
-| `/context` | Ver archivos en contexto del LLM |
-| `/add <file>` | Agregar archivo al contexto del prompt |
-| `/remove <file>` | Quitar archivo del contexto |
-| `/clear-context` | Limpiar todos los archivos del contexto |
-| `/project <path>` | Cambiar directorio del proyecto |
-| `/model <name>` | Cambiar modelo (reconecta) |
-| `/clear` | Limpiar historial de chat |
-| `/quit` | Salir |
-
-El historial se guarda persistentemente en `~/.cawl/shell_history` entre sesiones.
-
-### Ejecutar una tarea desde archivo `.md`
+### Consulta unica
 
 ```bash
-cawl run --task tareas/mi_tarea.md [--project /ruta] [--model modelo]
+cawl run -c "analiza la estructura del proyecto"
 ```
 
-### Ver el plan sin ejecutar
+### Ejecutar tarea
+
+```bash
+cawl run --task tareas/mi_tarea.md
+```
+
+### Ver plan sin ejecutar
 
 ```bash
 cawl plan --task tareas/mi_tarea.md
 ```
 
-### Comando único (sin REPL)
+### Watch mode
 
 ```bash
-cawl run -c "crear un archivo resultado.txt con la lista de .py en src/"
+cawl watch --task tareas/mi_tarea.md
 ```
 
-### Modo Watch — re-ejecuta al guardar
+### Multi-agente
 
 ```bash
-cawl watch --task tareas/mi_tarea.md [--interval 2]
+cawl multi -c "refactoriza auth.py y documenta cambios" --workers coder,reviewer,documenter
 ```
 
-Detecta cambios en el archivo `.md` cada `N` segundos y re-ejecuta automáticamente. Útil para iterar en tareas rápidamente. `Ctrl+C` para detener.
-
-### Multi-Agente
+### UI grafica
 
 ```bash
-# Un solo worker genérico
-cawl multi -c "Analiza el proyecto y genera un README actualizado"
-
-# Con roles especializados (secuencial, respetando dependencias)
-cawl multi -c "Refactoriza auth.py, escribe tests y documenta" \
-  --workers coder,reviewer,documenter
-
-# En paralelo (sub-tareas independientes corren en threads)
-cawl multi -c "Analiza src/ y genera docs simultáneamente" \
-  --workers analyst,documenter --parallel
+cawl ui
 ```
 
-El orquestador descompone la tarea, asigna sub-tareas al worker más apropiado según el rol, y consolida los resultados en una respuesta final.
+## Seleccion de modelos
 
-### GUI
+Puedes elegir modelo al iniciar:
 
 ```bash
-cawl ui [--project /ruta] [--model modelo]
+cawl run --select-model
+cawl shell --select-model
+cawl ui --select-model
+cawl status --select-model
 ```
 
-Interfaz con tema oscuro, árbol de archivos y burbuja de status animada que muestra qué herramienta se está ejecutando en tiempo real.
+## Configuracion
 
-### Otros
+Archivo base:
 
-```bash
-cawl init [--project /ruta]   # Inicializar .cawl/ en un proyecto
-cawl pull                      # Descargar el modelo configurado
-cawl status                    # Verificar conexión a Ollama
+```yaml
+executor:
+  model: "qwen2.5-coder:7b"
+  confirm_commands: true
+  max_tool_iterations: 20
+  max_history_chars: 12000
+  max_history_turns: 4
+  max_json_retries: 2
+  command_timeout: 60
+  streaming: true
+  streaming_throttle_ms: 200
+
+planner:
+  model: "qwen2.5-coder:7b"
+
+tools:
+  max_read_size: 102400
+  max_file_write_size: 1048576
 ```
 
----
+Prioridad de configuracion:
 
-## 🔧 Herramientas Disponibles
+1. Variables de entorno `CAWL_*`
+2. `./.cawl/config.yaml` del proyecto
+3. `~/.cawl/config.yaml`
+4. `cawl/config/config.yaml`
 
-El LLM elige y ejecuta estas herramientas automáticamente:
+## Arquitectura
 
-| Herramienta | Firma | Descripción |
-|---|---|---|
-| `read_file` | `(path, offset?, limit?)` | Lee un archivo. Soporta rangos de líneas. |
-| `write_file` | `(path, content, mode?)` | Escribe archivo. `mode='append'` para añadir. |
-| `list_files` | `(path, max_depth?, show_hidden?)` | Lista directorio. |
-| `grep_search` | `(pattern, path?, glob?, limit?)` | Busca regex en archivos. |
-| `glob_files` | `(pattern, path?)` | Encuentra archivos por patrón glob. |
-| `run_command` | `(command, timeout?)` | Ejecuta shell. Timeout 60s por defecto. |
-| `search_web` | `(query, max_results?)` | Busca en DuckDuckGo. Sin API key. |
-
----
-
-## 💾 Estructura del Proyecto
-
+```text
+Usuario
+  |
+  v
+Shell / CLI / UI
+  |
+  v
+Planner -> Executor
+  |
+  v
+Tool Registry
+  |- read_file
+  |- write_file
+  |- list_files
+  |- grep_search
+  |- glob_files
+  |- run_command
+  |- search_web
 ```
+
+## Estructura del proyecto
+
+```text
 cawl_agent/
-├── cawl/
-│   ├── cli/
-│   │   └── main.py              # CLI, REPL, TerminalSpinner, cmd_multi, cmd_shell
-│   ├── config/
-│   │   ├── config.py            # Config loader con overrides (env, user, project)
-│   │   └── config.yaml          # Todos los parámetros configurables
-│   ├── core/
-│   │   ├── executor.py          # Ejecuta pasos con retry JSON + validación auto-write
-│   │   ├── llm_client.py        # Cliente Ollama (chat, generate, streaming, tool parsing)
-│   │   ├── loop.py              # Bucle principal plan→execute
-│   │   ├── multi_agent.py       # OrchestratorAgent + WorkerAgent
-│   │   ├── planner.py           # Descompone tareas con retry JSON
-│   │   └── status.py            # StatusEmitter pub/sub (spinner + UI bubble)
-│   ├── memory/
-│   │   ├── global_memory.py
-│   │   └── project_memory.py    # Memoria aislada por proyecto
-│   ├── shell/
-│   │   ├── __init__.py
-│   │   ├── shell.py             # CawlShell — prompt_toolkit session
-│   │   ├── completer.py         # Tab-completion (comandos, archivos, herramientas)
-│   │   ├── context.py           # Tracker de contexto (archivos, proyecto, modelo)
-│   │   └── formatter.py         # Output formatting (verbose, timing, tool display)
-│   ├── tasks/
-│   │   └── parser.py
-│   ├── tools/
-│   │   ├── file_tools.py        # read_file, write_file, list_files, grep, glob
-│   │   ├── registry.py          # Registro central de herramientas
-│   │   ├── system_tools.py      # run_command con timeout configurable
-│   │   └── web_tools.py         # search_web (DuckDuckGo)
-│   └── ui.py                    # GUI PyQt5 con StatusBubble animada + confirmación
-├── tareas/                        # Tareas .md para CAWL (generadas por IA grande)
-├── parametros/                    # Contexto y restricciones del proyecto
-├── setup.py
-└── README.md
+|- cawl/
+|  |- cli/
+|  |  `- main.py
+|  |- config/
+|  |  |- config.py
+|  |  `- config.yaml
+|  |- core/
+|  |  |- executor.py
+|  |  |- llm_client.py
+|  |  |- loop.py
+|  |  |- multi_agent.py
+|  |  |- ollama_models.py
+|  |  |- planner.py
+|  |  `- status.py
+|  |- shell/
+|  |  |- shell.py
+|  |  |- completer.py
+|  |  |- context.py
+|  |  `- formatter.py
+|  |- tools/
+|  `- ui.py
+|- tareas/
+|- parametros/
+`- README.md
 ```
 
----
+## Seguridad
 
-## 🤖 Sistema Multi-Agente — Detalles
+- `run_command` requiere confirmacion por defecto
+- Hay timeout configurable para comandos
+- El cache de herramientas esta aislado por proyecto activo
+- Planner y executor reciben `project_path` y `model` explicitos
 
-### Cómo funciona
+## Troubleshooting
 
-```
-OrchestratorAgent.run("tarea grande")
-  │
-  ├── 1. LLM descompone en sub-tareas con roles asignados
-  │       [{"id":1, "subtask":"...", "role":"coder", "depends_on":[]}]
-  │
-  ├── 2a. Secuencial: ejecuta respetando depends_on (orden topológico)
-  │   2b. Paralelo:   lanza threads para sub-tareas sin dependencias
-  │
-  └── 3. LLM consolida todos los resultados → respuesta final
-```
-
-### Uso desde código Python
-
-```python
-from cawl.core.multi_agent import OrchestratorAgent, WorkerAgent
-
-# Con workers personalizados
-workers = [
-    WorkerAgent(
-        role="coder",
-        instructions="Escribe solo código Python limpio y tipado.",
-        tools=["read_file", "write_file", "grep_search"],
-    ),
-    WorkerAgent(
-        role="reviewer",
-        instructions="Revisa código y reporta bugs y mejoras de forma concisa.",
-        tools=["read_file", "grep_search"],
-    ),
-    WorkerAgent(
-        role="documenter",
-        instructions="Escribe documentación Markdown clara y técnica.",
-        tools=["read_file", "write_file", "list_files"],
-    ),
-]
-
-orchestrator = OrchestratorAgent(
-    model="qwen2.5-coder:7b",
-    workers=workers,
-    project_path="/ruta/a/tu/proyecto",
-    parallel=False,  # True para ejecutar en paralelo
-)
-
-result = orchestrator.run(
-    "Refactoriza el módulo de autenticación, "
-    "escribe tests unitarios y actualiza el README."
-)
-print(result)
-```
-
----
-
-## ⚡ Status en Tiempo Real
-
-Todos los eventos internos del agente se emiten a través de `StatusEmitter`:
-
-```python
-from cawl.core.status import status
-
-# Suscribirse a eventos (útil para integrar CAWL en tu propia UI)
-def mi_callback(event_type: str, message: str):
-    print(f"[{event_type}] {message}")
-
-status.subscribe(mi_callback)
-# ... ejecutar agente ...
-status.unsubscribe(mi_callback)
-```
-
-Tipos de eventos: `thinking`, `planning`, `tool_call`, `tool_result`, `step`, `retry`, `trim`, `done`, `error`, `agent`.
-
-**Terminal:** spinner Braille animado con icono por tipo de evento.
-**GUI:** burbuja animada con puntos `...` que aparece al enviar y desaparece al recibir respuesta.
-
----
-
-## 🧠 Memoria y Contexto
-
-- Cada ejecución se guarda en `.cawl/memory.json` del proyecto.
-- El planner recibe los últimos 5 runs como contexto para no repetir trabajo.
-- El historial de chat del REPL se comprime automáticamente cuando supera ~12.000 caracteres (conservando siempre los 4 turnos más recientes).
-- Máximo 20 runs almacenados por proyecto.
+### Ollama no responde
 
 ```bash
-cat .cawl/memory.json   # ver historial del proyecto actual
+ollama serve
+cawl status
 ```
 
----
+### Modelo no encontrado
 
-## 🛡️ Seguridad
-
-- `confirm_commands: true` (por defecto): el agente te pide confirmación antes de ejecutar cualquier comando de shell. Puedes responder `y`, `a` (siempre para esta sesión) o `n`.
-- `run_command` tiene un timeout de 60 segundos. Procesos colgados son terminados automáticamente.
-- Las herramientas disponibles para cada `WorkerAgent` en multi-agente pueden restringirse con `tools=[...]`.
-
----
-
-## 🔗 Flujo híbrido con Claude / GPT-4
-
-CAWL está diseñado para ser el **ejecutor local** de planes generados por IAs superiores:
-
-1. **`cawl init`** en tu proyecto — crea `tareas/` y `parametros/` con plantillas
-2. **Llena `parametros/contexto.md`** con info real de tu proyecto
-3. **En Claude**: Abre `tareas/PLANTILLA.md` y `parametros/` y dile: *"Genera una tarea siguiendo estas plantillas para [TAREA]"*
-4. **Guarda el resultado** en `tareas/mi_tarea.md`
-5. **CAWL ejecuta**: `cawl run --task tareas/mi_tarea.md`
-
-La IA maestra diseña la estrategia. CAWL ejecuta localmente sin consumir tokens adicionales.
-
----
-
-## 🐛 Troubleshooting
-
-**`Connection refused` a Ollama**
 ```bash
-ollama serve          # en una terminal
-cawl status           # en otra terminal
+cawl pull
 ```
 
-**`Model not found`**
-```bash
-cawl pull             # descarga el modelo configurado
-# o manualmente:
-ollama pull qwen2.5-coder:7b
+### Shell lenta o con demasiado historial
+
+Usa:
+
+```text
+/clear
+/reset
+/compact on
 ```
 
-**El agente devuelve texto en lugar de JSON**
-Ya está manejado automáticamente: CAWL reintenta hasta 2 veces inyectando el error de parseo de vuelta al modelo para que se autocorrija.
+## Roadmap
 
-**`run_command` se corta a los 60 segundos**
-Aumenta el timeout pasándolo explícitamente o en la tarea: *"ejecuta X con timeout de 120 segundos"*.
+- [x] Shell interactiva unificada
+- [x] Selector inicial de modelos locales
+- [x] Cache aislado por proyecto
+- [x] Planner y executor con contexto explicito
+- [x] UI grafica
+- [ ] Selector visual de modelo dentro de la UI
+- [ ] Mejor render para bloques grandes y archivos
+- [ ] Integracion mas profunda con Git
+- [ ] Interfaz web opcional
 
-**Historial muy largo / respuestas lentas**
-El REPL comprime automáticamente el historial. También puedes limpiarlo manualmente con `/clear`.
+## Licencia
 
----
-
-## 🎓 Roadmap
-
-- [x] Arquitectura Planner → Executor
-- [x] Memoria persistente por proyecto
-- [x] Retry automático en JSON inválido
-- [x] Timeout en `run_command`
-- [x] Status en tiempo real (terminal + UI)
-- [x] Compresión automática del historial
-- [x] `search_web` sin API key
-- [x] Modo `watch` (re-run al guardar)
-- [x] Sistema multi-agente (Orchestrator + Workers)
-- [x] CawlShell — shell enriquecida con prompt_toolkit
-- [x] Validación de auto-write (rechaza razonamiento como contenido)
-- [x] Streaming con throttle en REPL
-- [x] Config flexible (env vars, per-project, user-level)
-- [x] Confirmación de run_command en UI
-- [x] Thread safety en flags de ejecución
-- [ ] Plugin system para herramientas custom
-- [ ] Interfaz web (alternativa a PyQt5)
-- [ ] Integración con Git (auto-commit de artefactos generados)
-- [ ] Soporte para modelos remotos (no solo Ollama local)
-
----
-
-## 📄 Licencia
-
-MIT — úsalo libremente.
+MIT

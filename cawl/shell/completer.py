@@ -12,8 +12,9 @@ import os
 
 
 SLASH_COMMANDS = [
-    "/help", "/status", "/tools", "/clear", "/verbose", "/context",
-    "/add", "/remove", "/project", "/model", "/quit", "/exit",
+    "/help", "/status", "/session", "/models", "/tools", "/clear", "/reset",
+    "/verbose", "/compact", "/context", "/add", "/remove", "/clear-context",
+    "/project", "/model", "/quit", "/exit",
 ]
 
 # Reverse lookup: prefix -> full command
