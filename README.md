@@ -19,7 +19,7 @@
 
 ## Filosofia
 
-CAWL ya no usa una personalidad teatral. El agente esta enfocado en:
+CAWL esta enfocado en:
 
 - Codigo bien estructurado
 - Salidas claras y organizadas
