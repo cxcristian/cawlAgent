@@ -96,6 +96,10 @@ class CawlShell:
             "- USA LAS HERRAMIENTAS DISPONIBLES: Tienes acceso a herramientas para "
             "interactuar con el sistema de archivos. Usalas para leer, escribir, buscar "
             "y explorar. No inventes contenido de archivos, leelos con las herramientas.\n"
+            f"- RAIZ DEL PROYECTO ACTIVA: {self.context.project_path}\n"
+            "- Todas las rutas relativas se resuelven desde esa raiz del proyecto.\n"
+            "- Si el usuario menciona un archivo como `cawl/ui.py`, usa ese path real o su equivalente absoluto bajo la raiz activa.\n"
+            "- Nunca digas que no puedes leer archivos o inspeccionar carpetas cuando exista una herramienta adecuada.\n"
             f"\n{self.context.get_context_prompt()}\n"
             "ESTILO DE RESPUESTA:\n"
             "- Responde SIEMPRE en espanol.\n"
@@ -114,6 +118,23 @@ class CawlShell:
             "3. Cuando tengas toda la informacion, responde normalmente en espanol.\n"
             "4. NUNCA digas 'voy a usar' antes del JSON. SOLO el JSON.\n"
         )
+
+    def _should_retry_for_tool_use(self, user_message: str, response_text: str) -> bool:
+        """Detect when the model refused a file/task request instead of using tools."""
+        lowered_user = user_message.lower()
+        lowered_response = response_text.lower()
+        asks_about_files = any(token in lowered_user for token in [
+            ".py", ".md", ".json", "archivo", "carpeta", "lee", "mira", "revisa", "explora"
+        ])
+        refusal_patterns = [
+            "no tengo la capacidad de leer",
+            "no puedo abrir",
+            "no puedo leer archivos",
+            "como asistente de texto",
+            "no tengo una interfaz grafica",
+            "no puedo interactuar directamente con archivos",
+        ]
+        return asks_about_files and any(pattern in lowered_response for pattern in refusal_patterns)
 
     def initialize(self) -> bool:
         """Initialize connection to Ollama and verify model."""
@@ -392,6 +413,17 @@ class CawlShell:
 
             if not response["tool_calls"]:
                 if response["content"]:
+                    if self._should_retry_for_tool_use(message, response["content"]):
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "Tu respuesta anterior rechazo usar herramientas de forma incorrecta. "
+                                "Tienes acceso real al proyecto activo y debes usar las herramientas disponibles "
+                                f"para inspeccionar archivos bajo {self.context.project_path}. "
+                                "Vuelve a responder y usa una herramienta si el usuario pidio mirar archivos, carpetas o contenido del proyecto."
+                            ),
+                        })
+                        continue
                     self.chat_history.append({"role": "assistant", "content": response["content"]})
                     print("\n" + self.formatter.format_response(response["content"]))
                     print("\n" + self.formatter.format_note("Tiempo", self.formatter.elapsed()) + "\n")

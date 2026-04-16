@@ -244,25 +244,16 @@ def confirm_command_shell(
     if use_prompt_toolkit:
         try:
             from prompt_toolkit import prompt
-            from prompt_toolkit.formatted_text import HTML
-            
-            # Display command info with formatting
-            risk_color = {
-                RiskLevel.LOW: "#00ff00",
-                RiskLevel.MEDIUM: "#ffff00",
-                RiskLevel.HIGH: "#ff6600",
-                RiskLevel.CRITICAL: "#ff0000",
-            }.get(risk_level, "#ffffff")
-            
+
             print(f"\n{'─' * 60}")
-            print(f"⚡ Comando: <ansibold>{command}</ansibold>")
-            print(f"   Riesgo: <style fg='{risk_color}'>{details['risk_label']}</style>")
+            print(f"⚡ Comando: {command}")
+            print(f"   Riesgo: {details['risk_label']}")
             print(f"   Timeout: {details['timeout']}s | Dir: {details['working_dir']}")
             print(f"{'─' * 60}")
             print("Opciones: y=yes, a=always, n=no, d=details, e=edit, b=batch, s=skip all")
-            
-            answer = prompt("→ ", style="ansigreen").strip().lower()
-            
+
+            answer = prompt("→ ").strip().lower()
+
             return _parse_shell_response(answer, state, command)
         except ImportError:
             pass  # Fall back to standard input

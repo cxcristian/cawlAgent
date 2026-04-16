@@ -33,6 +33,13 @@ TEXT_EXTENSIONS = {
     ".graphql", ".proto", ".tf", ".dockerfile", ".gitignore", ".gitattributes",
 }
 
+PLACEHOLDER_SEGMENTS = {
+    "/ruta/absoluta/",
+    "\\ruta\\absoluta\\",
+    "/path/to/",
+    "\\path\\to\\",
+}
+
 
 def _is_text_file(file_path: Path) -> bool:
     """Determine if a file is likely text-based."""
@@ -45,6 +52,30 @@ def _is_text_file(file_path: Path) -> bool:
         return True
     except (UnicodeDecodeError, OSError):
         return False
+
+
+def _resolve_path_input(path: str) -> Path:
+    """Resolve common placeholder paths back into the active workspace when possible."""
+    candidate = Path(path)
+    if candidate.exists():
+        return candidate
+
+    normalized = path.replace("\\", "/")
+    for marker in PLACEHOLDER_SEGMENTS:
+        clean_marker = marker.replace("\\", "/")
+        if clean_marker in normalized:
+            tail = normalized.split(clean_marker, 1)[1].lstrip("/")
+            if tail:
+                workspace_candidate = Path(os.getcwd()) / Path(tail)
+                if workspace_candidate.exists():
+                    return workspace_candidate
+
+    if not candidate.is_absolute():
+        relative_candidate = Path(os.getcwd()) / candidate
+        if relative_candidate.exists():
+            return relative_candidate
+
+    return candidate
 
 
 def _truncate_content(content: str, max_size: int = None) -> tuple[str, bool]:
@@ -87,7 +118,7 @@ def read_file(path: str, offset: Optional[int] = None, limit: Optional[int] = No
     Returns:
         File content as string, or error message.
     """
-    fpath = Path(path)
+    fpath = _resolve_path_input(path)
 
     if not fpath.exists():
         return f"[ERROR] File does not exist: {path}"
@@ -136,7 +167,7 @@ def write_file(path: str, content: str, mode: str = "write") -> str:
     Returns:
         Confirmation string or error message.
     """
-    fpath = Path(path)
+    fpath = _resolve_path_input(path)
     try:
         fpath.parent.mkdir(parents=True, exist_ok=True)
         write_mode = "a" if mode == "append" else "w"
@@ -162,7 +193,7 @@ def list_files(path: str, max_depth: int = 1, show_hidden: bool = False) -> str:
     Returns:
         Formatted directory listing.
     """
-    dir_path = Path(path)
+    dir_path = _resolve_path_input(path)
 
     if not dir_path.exists():
         return f"[ERROR] Path does not exist: {path}"
@@ -209,7 +240,7 @@ def grep_search(
     Returns:
         Formatted search results.
     """
-    search_path = Path(path)
+    search_path = _resolve_path_input(path)
 
     if not search_path.exists():
         return f"[ERROR] Path does not exist: {path}"
@@ -297,7 +328,7 @@ def glob_files(pattern: str, path: str = ".") -> str:
     Returns:
         List of matching file paths.
     """
-    search_path = Path(path)
+    search_path = _resolve_path_input(path)
 
     if not search_path.exists():
         return f"[ERROR] Path does not exist: {path}"
