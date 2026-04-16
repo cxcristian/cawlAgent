@@ -6,16 +6,21 @@ executor:
   max_history_turns: 4
   max_json_retries: 2
   command_timeout: 60
-  streaming: true              # Enable token-by-token streaming in REPL
-  streaming_throttle_ms: 200   # Min ms between spinner updates during streaming
-  llm_max_retries: 3           # Max retries for 500 errors
-  llm_retry_delay: 2           # Initial delay in seconds (exponential backoff)
+  streaming: true # Enable token-by-token streaming in REPL
+  streaming_throttle_ms: 200 # Min ms between spinner updates during streaming
+  llm_max_retries: 3 # Max retries for 500 errors
+  llm_retry_delay: 2 # Initial delay in seconds (exponential backoff)
+
+confirmation:
+  execution_mode: "interactive" # interactive, trusted, dry-run, safe-only
+  show_details: true # Show command details in confirmation
+  auto_edit: false # Allow auto-editing dangerous commands
 
 planner:
   model: "qwen2.5-coder:7b"
 
 tools:
-  max_read_size: 102400       # 100 KB
+  max_read_size: 102400 # 100 KB
   max_file_write_size: 1048576 # 1 MB
 
 memory:

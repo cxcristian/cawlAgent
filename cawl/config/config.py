@@ -14,6 +14,16 @@ import yaml
 import os
 
 
+def _deep_update(base: dict, updates: dict) -> dict:
+    """Recursively merge nested dictionaries."""
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
 class Config:
     def __init__(self, config_path=None, project_path=None):
         self.config_path = config_path
@@ -28,18 +38,18 @@ class Config:
         if self.config_path is None:
             base_dir = os.path.dirname(os.path.abspath(__file__))
             self.config_path = os.path.join(base_dir, "config.yaml")
-        data.update(self._load_yaml(self.config_path))
+        _deep_update(data, self._load_yaml(self.config_path))
 
         # Layer 2: user-level (~/.cawl/config.yaml)
         user_config = os.path.expanduser("~/.cawl/config.yaml")
-        data.update(self._load_yaml(user_config))
+        _deep_update(data, self._load_yaml(user_config))
 
         # Layer 3: per-project ({project_path}/.cawl/config.yaml)
         project_config = os.path.join(self.project_path, ".cawl", "config.yaml")
-        data.update(self._load_yaml(project_config))
+        _deep_update(data, self._load_yaml(project_config))
 
         # Layer 4: environment variables
-        data.update(self._load_env_vars())
+        _deep_update(data, self._load_env_vars())
 
         return data
 
@@ -100,8 +110,11 @@ _config = None
 
 def get_config(project_path=None):
     global _config
+    normalized_project = os.path.abspath(project_path) if project_path else None
     if _config is None:
-        _config = Config(project_path=project_path)
+        _config = Config(project_path=normalized_project)
+    elif normalized_project and os.path.abspath(_config.project_path) != normalized_project:
+        _config = Config(project_path=normalized_project)
     return _config
 
 

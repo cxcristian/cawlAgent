@@ -316,11 +316,18 @@ class OllamaClient:
 _client: Optional[OllamaClient] = None
 
 
-def get_llm_client() -> OllamaClient:
+def get_llm_client(model: Optional[str] = None, project_path: Optional[str] = None) -> OllamaClient:
     """Return a singleton OllamaClient using config values."""
     global _client
-    if _client is None:
-        config = get_config()
-        model = config.get("executor.model", DEFAULT_MODEL)
-        _client = OllamaClient(model=model)
+    config = get_config(project_path=project_path)
+    selected_model = model or config.get("executor.model", DEFAULT_MODEL)
+    if _client is None or _client.model != selected_model:
+        _client = OllamaClient(model=selected_model)
     return _client
+
+
+def reset_llm_client(model: Optional[str] = None, project_path: Optional[str] = None) -> OllamaClient:
+    """Force recreation of the singleton Ollama client."""
+    global _client
+    _client = None
+    return get_llm_client(model=model, project_path=project_path)

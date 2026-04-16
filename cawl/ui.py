@@ -22,6 +22,8 @@ from PyQt5.QtGui import (
     QPainter, QBrush, QFontMetrics
 )
 
+from cawl.config.config import reload_config
+
 # ---------------------------------------------------------------------------
 # Colores / tema
 # ---------------------------------------------------------------------------
@@ -871,6 +873,8 @@ class CawlWindow(QMainWindow):
         )
         if folder:
             self.project_path = folder
+            os.chdir(folder)
+            reload_config(project_path=folder)
             self.path_lbl.setText(self._short_path(folder))
             self.fs_model.setRootPath(folder)
             self.tree.setRootIndex(self.fs_model.index(folder))
@@ -909,6 +913,8 @@ def launch_ui(project_path: str = None, model: str = None):
 
     window = CawlWindow()
     if project_path:
+        os.chdir(os.path.abspath(project_path))
+        reload_config(project_path=os.path.abspath(project_path))
         window.project_path = os.path.abspath(project_path)
         window.path_lbl.setText(window._short_path(window.project_path))
         window.fs_model.setRootPath(window.project_path)

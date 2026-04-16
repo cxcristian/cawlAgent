@@ -173,13 +173,13 @@ paths:
 
 ## 📖 Comandos
 
-### REPL interactivo (modo por defecto)
+### Shell interactiva principal (modo por defecto)
 
 ```bash
 cawl run
 ```
 
-Entra en modo chat con herramientas. Spinner animado mientras el agente trabaja.
+Entra en la shell interactiva principal con historial, autocompletado, contexto visible y soporte de herramientas.
 
 ```
 cawl> listar los archivos en src/
@@ -187,7 +187,7 @@ cawl> listar los archivos en src/
 cawl> buscar todos los TODO en el código
 ```
 
-Comandos internos del REPL:
+Comandos de la shell:
 
 | Comando | Acción |
 |---|---|
@@ -197,13 +197,13 @@ Comandos internos del REPL:
 | `/clear` | Limpiar historial de chat |
 | `/quit` | Salir |
 
-### CawlShell — Shell enriquecida (nuevo en v0.3.0)
+### Alias interactivo: `cawl shell`
 
 ```bash
 cawl shell
 ```
 
-Shell interactiva inspirada en Qwen Code con experiencia de terminal avanzada:
+`cawl shell` sigue disponible, pero ahora actúa como alias de `cawl run` y abre la misma experiencia interactiva.
 
 | Feature | Cómo |
 |---|---|

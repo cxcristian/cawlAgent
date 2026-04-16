@@ -25,9 +25,10 @@ from cawl.shell.context import ShellContext
 from cawl.shell.completer import CawlCompleter
 from cawl.shell.formatter import OutputFormatter
 from cawl.core.llm_client import OllamaClient, DEFAULT_MODEL
+from cawl.core.ollama_models import list_local_ollama_models, prompt_for_model_selection
 from cawl.tools.registry import TOOLS, TOOL_DESCRIPTIONS, get_tool
 from cawl.core.status import status
-from cawl.config.config import get_config
+from cawl.config.config import get_config, reload_config
 from cawl.memory.project_memory import ProjectMemory
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,7 @@ HELP_TEXT = """
 Commands:
   /help              Show this help
   /status            Check Ollama connection
+  /models            List local Ollama models
   /tools             List available tools
   /verbose on|off    Toggle verbose mode
   /context           Show files in context
@@ -68,6 +70,7 @@ Commands:
   /clear-context     Clear all context files
   /project <path>    Change project directory
   /model <name>      Change the model
+  /model pick        Open a local model picker
   /clear             Clear chat history
   /quit /exit        Exit the shell
 
@@ -103,6 +106,10 @@ class CawlShell:
         hist_dir = os.path.expanduser("~/.cawl")
         os.makedirs(hist_dir, exist_ok=True)
         self.hist_file = os.path.join(hist_dir, "shell_history")
+
+        # Initialize confirmation system
+        from cawl.core.confirmation import initialize_confirmation_from_config
+        initialize_confirmation_from_config()
 
     # -- System prompt -------------------------------------------------------
 
@@ -166,8 +173,7 @@ class CawlShell:
     def run(self):
         """Run the interactive shell loop."""
         print(BANNER)
-        print(f"  {self.context.format_status()}\n")
-        print(f"  Type /help for commands. Shift+Enter for new line.\n")
+        self._print_session_header()
 
         # Create prompt session
         session = PromptSession(
@@ -214,14 +220,21 @@ class CawlShell:
     def _build_prompt(self):
         """Build the context-aware prompt display."""
         ctx_files = len(self.context.context_files)
-        if ctx_files:
-            file_hint = f" [{ctx_files} file(s)]"
-        else:
-            file_hint = ""
+        file_hint = f" ctx:{ctx_files}" if ctx_files else " ctx:0"
+        project_name = Path(self.context.project_path).name or self.context.project_path
         return HTML(
-            f'<prompt>cawl</prompt><context-bar>{file_hint}</context-bar>'
+            f'<prompt>cawl</prompt><context-bar> [{project_name} | {self.context.model}{file_hint}]</context-bar>'
             f'<prompt>&gt; </prompt>'
         )
+
+    def _print_session_header(self):
+        """Show a concise session summary at startup."""
+        models = list_local_ollama_models()
+        model_count = len(models)
+        print(f"  Proyecto: {self.context.project_path}")
+        print(f"  Modelo activo: {self.context.model}")
+        print(f"  Modelos locales: {model_count}")
+        print("  /help para comandos. Shift+Enter para nueva linea.\n")
 
     # -- Command handler -----------------------------------------------------
 
@@ -240,6 +253,9 @@ class CawlShell:
 
         elif command == "/status":
             self._cmd_status()
+
+        elif command == "/models":
+            self._cmd_models()
 
         elif command == "/tools":
             print(f"\n  Available tools:\n{TOOL_DESCRIPTIONS}\n")
@@ -295,6 +311,17 @@ class CawlShell:
         except ConnectionError as e:
             print(f"  Ollama: NOT CONNECTED\n  {e}\n")
 
+    def _cmd_models(self):
+        models = list_local_ollama_models()
+        if not models:
+            print("  No se pudieron listar modelos locales de Ollama.\n")
+            return
+        print("\n  Modelos locales:")
+        for index, model in enumerate(models, start=1):
+            marker = " <- activo" if model == self.context.model else ""
+            print(f"    {index}. {model}{marker}")
+        print()
+
     def _cmd_context(self):
         if not self.context.context_files:
             print("  No files in context.")
@@ -331,6 +358,8 @@ class CawlShell:
             return
         resolved = self.context.set_project(path)
         if os.path.exists(resolved):
+            os.chdir(resolved)
+            reload_config(project_path=resolved)
             print(f"  Project changed to: {resolved}")
             self.system_prompt = self._build_system_prompt()
         else:
@@ -340,13 +369,20 @@ class CawlShell:
         if not name:
             print(f"  Current model: {self.context.model}")
             return
-        self.context.model = name
+        selected_name = name
+        if name.lower() == "pick":
+            selected_name = prompt_for_model_selection(default_model=self.context.model)
+            if not selected_name:
+                print("  No hay modelos locales disponibles para seleccionar.")
+                return
+
         # Reconnect with new model
         try:
-            self.client = OllamaClient(model=name)
-            print(f"  Model changed to: {name}")
+            self.client = OllamaClient(model=selected_name)
+            self.context.model = selected_name
+            print(f"  Model changed to: {selected_name}")
         except ConnectionError as e:
-            print(f"  [ERROR] Cannot connect with model '{name}': {e}")
+            print(f"  [ERROR] Cannot connect with model '{selected_name}': {e}")
 
     # -- Tool loop -----------------------------------------------------------
 
@@ -392,15 +428,21 @@ class CawlShell:
                 # Display tool call
                 print(self.formatter.format_tool_call(tool_name, tool_args))
 
-                # Confirmation gate for run_command
+                # Enhanced confirmation for run_command
                 if tool_name == "run_command":
+                    from cawl.core.confirmation import confirm_command_shell, ConfirmationResponse
                     cmd = tool_args.get("command", str(tool_args))
-                    print(f"\n  Execute: {cmd}")
-                    try:
-                        choice = input("  Authorize? (y)es / (n)o: ").lower()
-                    except (EOFError, KeyboardInterrupt):
-                        choice = "n"
-                    if choice != "y":
+                    working_dir = tool_args.get("working_dir")
+                    timeout = get_config().get("executor.command_timeout", 60)
+                    
+                    response_type, edited_command = confirm_command_shell(
+                        cmd,
+                        working_dir=working_dir,
+                        timeout=timeout,
+                        state=None  # Use global state
+                    )
+                    
+                    if response_type == ConfirmationResponse.NO:
                         result_str = "Command execution denied by user."
                         print(f"  [SKIPPED] {result_str}")
                         messages.append({
@@ -408,6 +450,9 @@ class CawlShell:
                             "content": f"RESULTADO de {tool_name}: {result_str}",
                         })
                         continue
+                    elif response_type == ConfirmationResponse.EDIT and edited_command:
+                        tool_args["command"] = edited_command
+                        print(f"  [EDITED] Command changed to: {edited_command}")
 
                 # Execute the tool
                 func = get_tool(tool_name)

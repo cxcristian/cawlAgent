@@ -25,10 +25,23 @@ from typing import Optional
 
 from colorama import init, Fore, Style
 
-from cawl.config.config import get_config
-from cawl.core.llm_client import OllamaClient, DEFAULT_MODEL
+from cawl.config.config import get_config, reload_config
+from cawl.core.llm_client import OllamaClient, DEFAULT_MODEL, reset_llm_client
+from cawl.core.ollama_models import (
+    list_local_ollama_models,
+    model_is_available,
+    prompt_for_model_selection,
+)
 from cawl.core.loop import run_loop
 from cawl.core.status import status
+from cawl.core.confirmation import (
+    confirm_command_cli, 
+    get_confirmation_state, 
+    reset_confirmation_state,
+    ConfirmationResponse,
+    ExecutionMode,
+    set_execution_mode
+)
 from cawl.memory.project_memory import ProjectMemory
 from cawl.tasks.parser import parse_task_file
 from cawl.tools.registry import TOOLS, TOOL_DESCRIPTIONS, get_tool
@@ -72,16 +85,24 @@ class TerminalSpinner:
         self._current_msg = "Procesando..."
         self._current_event = "thinking"
         self._lock = threading.Lock()
+        self._paused = False
 
     def _on_status(self, event_type: str, message: str):
         with self._lock:
             self._current_event = event_type
             self._current_msg = message
+            if event_type == "tool_call" and "run_command" in message:
+                self._paused = True
+            elif event_type == "tool_result":
+                self._paused = False
 
     def _spin(self):
         frame_idx = 0
         while self._active:
             with self._lock:
+                if self._paused:
+                    time.sleep(0.08)
+                    continue
                 event = self._current_event
                 msg = self._current_msg
             icon = self.ICONS.get(event, f"{Fore.WHITE}○{Style.RESET_ALL}")
@@ -154,9 +175,9 @@ def build_system_prompt(project_root: str = "") -> str:
         "explícale estos modos:\n"
         "  · `cawl init` — Inicializa un proyecto. Crea tareas/ y parametros/ con "
         "plantillas guiadas por IA. Siempre recomienda esto primero.\n"
-        "  · `cawl shell` — Shell interactiva enriquecida con historial, tab-completion, "
+        "  · `cawl run` — Shell interactiva principal con historial, tab-completion, "
         "contexto visible y verbose mode. La mejor experiencia para chat libre.\n"
-        "  · `cawl run` — REPL clásico. Simple, directo.\n"
+        "  · `cawl shell` — Alias compatible de `cawl run` para la misma experiencia interactiva.\n"
         "  · `cawl run --task tareas/archivo.md` — Ejecuta una tarea planificada.\n"
         "  · `cawl run -c \"consulta\"` — Comando único sin entrar al REPL.\n"
         "  · `cawl multi -c \"tarea\" --workers rol1,rol2` — Multi-agente: descompone "
@@ -169,7 +190,7 @@ def build_system_prompt(project_root: str = "") -> str:
         "parametros/contexto.md → pedir a Claude/GPT que genere una tarea en tareas/ "
         "siguiendo PLANTILLA.md → `cawl run --task tareas/mi_tarea.md`.\n"
         "- Si el usuario es novato y no sabe por dónde empezar: recomiéndale "
-        "`cawl init` primero, luego `cawl shell` para explorar en modo chat.\n"
+        "`cawl init` primero, luego `cawl run` para explorar en modo chat.\n"
         "- Tus herramientas son: read_file, write_file, list_files, grep_search, "
         "glob_files, run_command, search_web. Úsalas según corresponda.\n"
         "PATRÓN DE HABLA:\n"
@@ -225,11 +246,72 @@ HELP_TEXT = f"""
 {Fore.CYAN}Comandos disponibles:{Style.RESET_ALL}
   /help        - Mostrar esta ayuda
   /status      - Verificar conexión a Ollama
+  /models      - Listar modelos locales detectados
   /tools       - Listar herramientas disponibles
   /clear       - Limpiar historial de chat
+  /mode        - Mostrar modo de ejecución actual
+  /mode <modo> - Cambiar modo (interactive|trusted|dry-run|safe-only)
   /quit        - Salir del agente
   (cualquier otro texto se envía al agente con soporte de herramientas)
 """
+
+
+def resolve_cli_model(
+    requested_model: Optional[str],
+    *,
+    project_path: Optional[str] = None,
+    allow_selection: bool = False,
+) -> str:
+    """Resolve the active model, optionally prompting the user to choose one."""
+    config = get_config(project_path=project_path)
+    config_model = config.get("executor.model", DEFAULT_MODEL)
+    model = requested_model or config_model
+
+    if allow_selection:
+        selected = prompt_for_model_selection(default_model=model)
+        if selected:
+            return selected
+
+    return model
+
+
+def print_model_inventory(selected_model: str) -> None:
+    """Print the local Ollama models with a highlight for the active one."""
+    models = list_local_ollama_models()
+    if not models:
+        print(f"{Fore.RED}[ERROR]{Fore.RESET} No se pudieron listar modelos locales de Ollama.")
+        return
+
+    print(f"{Fore.CYAN}[MODELS]{Fore.RESET} Modelos locales detectados:")
+    for index, model in enumerate(models, start=1):
+        marker = " <- activo" if model == selected_model else ""
+        print(f"  {index:>2}. {model}{marker}")
+    print()
+
+
+def activate_project_context(project_path: str, model: Optional[str] = None) -> None:
+    """Align cwd, config, and shared Ollama client with the selected project."""
+    os.chdir(project_path)
+    config = reload_config(project_path=project_path)
+    if model:
+        config.set("executor.model", model)
+        config.set("planner.model", model)
+        reset_llm_client(model=model, project_path=project_path)
+
+
+def launch_interactive_shell(project_path: str, model: str) -> None:
+    """Launch the unified interactive terminal experience."""
+    try:
+        from cawl.shell import CawlShell
+    except ImportError as e:
+        print(f"[ERROR] No se pudo cargar CawlShell: {e}")
+        print("Asegúrate de tener prompt_toolkit instalado: pip install -e .")
+        sys.exit(1)
+
+    shell = CawlShell(project_path=project_path, model=model)
+    if not shell.initialize():
+        sys.exit(1)
+    shell.run()
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +338,10 @@ class CawlAgent:
         self.MAX_HISTORY_CHARS = config.get("executor.max_history_chars", 12_000)
         self.MIN_HISTORY_TURNS = config.get("executor.max_history_turns", 4)
         self.streaming_enabled = config.get("executor.streaming", True)
+
+        # Initialize confirmation system
+        from cawl.core.confirmation import initialize_confirmation_from_config
+        initialize_confirmation_from_config()
 
     def initialize(self) -> bool:
         """Initialize connection to Ollama and verify model."""
@@ -287,6 +373,15 @@ class CawlAgent:
             return status
         except ConnectionError as e:
             return f"Ollama: NOT CONNECTED\n{e}"
+
+    def set_execution_mode(self, mode_str: str) -> str:
+        """Set the execution mode for command confirmation."""
+        try:
+            mode = ExecutionMode(mode_str.lower())
+            set_execution_mode(mode)
+            return f"Modo cambiado a: {mode.value}"
+        except ValueError:
+            return f"Modo inválido: {mode_str}. Opciones: interactive, trusted, dry-run, safe-only"
 
     def _trim_history(self) -> None:
         """
@@ -401,16 +496,28 @@ class CawlAgent:
                     f"Calling: {tool_name}({json.dumps(tool_args, indent=2, ensure_ascii=False)})"
                 )
 
-                # Confirmation gate for run_command
+                # Confirmation gate for run_command (enhanced)
                 if tool_name == "run_command":
                     cmd = tool_args.get("command", str(tool_args))
-                    print(f"\n{Fore.RED}[CONFIRMATION REQUIRED]{Fore.RESET} Execute: {cmd}")
-                    choice = input("Authorize? (y)es / (n)o: ").lower()
-                    if choice != "y":
+                    working_dir = tool_args.get("working_dir")
+                    timeout = get_config().get("executor.command_timeout", 60)
+                    
+                    response_type, edited_command = confirm_command_cli(
+                        cmd,
+                        working_dir=working_dir,
+                        timeout=timeout,
+                        state=get_confirmation_state()
+                    )
+                    
+                    if response_type == ConfirmationResponse.NO:
                         result_str = "Command execution denied by user."
                         print(f"{Fore.YELLOW}[SKIPPED]{Fore.RESET} {result_str}")
                         messages.append({"role": "user", "content": f"RESULTADO de {tool_name}: {result_str}"})
                         continue
+                    elif response_type == ConfirmationResponse.EDIT and edited_command:
+                        tool_args["command"] = edited_command
+                        cmd = edited_command
+                        print(f"{Fore.CYAN}[EDITED]{Fore.RESET} Command changed to: {cmd}")
 
                 func = get_tool(tool_name)
                 if func is None:
@@ -491,11 +598,36 @@ class CawlAgent:
             print(HELP_TEXT)
         elif cmd == "/status":
             print(self.get_status())
+        elif cmd == "/models":
+            print_model_inventory(self.model)
         elif cmd == "/tools":
             print(f"\n{Fore.CYAN}Available tools:{Style.RESET_ALL}\n{TOOL_DESCRIPTIONS}\n")
         elif cmd == "/clear":
             self.clear_chat()
             print(f"{Fore.GREEN}[INFO]{Fore.RESET} Chat history cleared.")
+        elif cmd.startswith("/mode"):
+            parts = cmd.split()
+            if len(parts) == 1:
+                from cawl.core.confirmation import get_confirmation_state
+                state = get_confirmation_state()
+                print(f"{Fore.CYAN}[MODE]{Fore.RESET} Current execution mode: {state.execution_mode.value}")
+            elif len(parts) == 2:
+                from cawl.core.confirmation import get_confirmation_state, ExecutionMode
+                mode_map = {
+                    "interactive": ExecutionMode.INTERACTIVE,
+                    "trusted": ExecutionMode.TRUSTED,
+                    "dry-run": ExecutionMode.DRY_RUN,
+                    "safe-only": ExecutionMode.SAFE_ONLY,
+                }
+                mode_name = parts[1]
+                if mode_name in mode_map:
+                    state = get_confirmation_state()
+                    state.execution_mode = mode_map[mode_name]
+                    print(f"{Fore.GREEN}[MODE]{Fore.RESET} Execution mode changed to: {mode_name}")
+                else:
+                    print(f"{Fore.RED}[ERROR]{Fore.RESET} Invalid mode. Use: interactive, trusted, dry-run, safe-only")
+            else:
+                print(f"{Fore.CYAN}[USAGE]{Fore.RESET} /mode [interactive|trusted|dry-run|safe-only]")
         else:
             print(f"{Fore.RED}[ERROR]{Fore.RESET} Unknown command: {cmd}")
             print("Type /help for available commands.")
@@ -507,9 +639,27 @@ class CawlAgent:
 
 def cmd_run(args):
     """Run a task or start REPL."""
-    config = get_config()
-    model = args.model or config.get("executor.model", DEFAULT_MODEL)
     project_path = os.path.abspath(args.project or os.getcwd())
+    model = resolve_cli_model(
+        args.model,
+        project_path=project_path,
+        allow_selection=getattr(args, "select_model", False),
+    )
+    activate_project_context(project_path, model=model)
+
+    # Set execution mode if specified
+    if hasattr(args, 'execution_mode') and args.execution_mode:
+        from cawl.core.confirmation import get_confirmation_state, ExecutionMode
+        state = get_confirmation_state()
+        mode_map = {
+            "interactive": ExecutionMode.INTERACTIVE,
+            "trusted": ExecutionMode.TRUSTED,
+            "dry-run": ExecutionMode.DRY_RUN,
+            "safe-only": ExecutionMode.SAFE_ONLY,
+        }
+        state.execution_mode = mode_map.get(args.execution_mode, ExecutionMode.INTERACTIVE)
+        mode_label = state.execution_mode.value
+        print(f"{Fore.CYAN}[MODE]{Fore.RESET} Execution mode: {mode_label}")
 
     # Check if project is initialized (recommended but not required)
     cawl_dir = os.path.join(project_path, ".cawl")
@@ -526,8 +676,7 @@ def cmd_run(args):
 
     # Check Ollama + model
     try:
-        result = subprocess.run(["ollama", "list"], capture_output=True, text=True)
-        if model not in result.stdout:
+        if not model_is_available(model):
             print(f"{Fore.YELLOW}[WARNING]{Fore.RESET} Model '{model}' not found in Ollama.")
             print(f"Run {Fore.CYAN}cawl pull{Fore.RESET} to download it.")
     except Exception:
@@ -554,12 +703,8 @@ def cmd_run(args):
             traceback.print_exc()
         return
 
-    # Default: REPL
-    print(BANNER)
-    agent = CawlAgent(model=model, project_root=project_path)
-    if not agent.initialize():
-        sys.exit(1)
-    agent.run_repl()
+    # Default: unified interactive shell
+    launch_interactive_shell(project_path=project_path, model=model)
 
 
 def cmd_plan(args):
@@ -569,6 +714,7 @@ def cmd_plan(args):
         sys.exit(1)
 
     project_path = os.path.abspath(args.project or os.getcwd())
+    activate_project_context(project_path)
     memory = ProjectMemory(project_path)
     recent_runs = memory.get_recent_runs(limit=5)
 
@@ -775,9 +921,10 @@ def cmd_multi(args):
     """
     from cawl.core.multi_agent import OrchestratorAgent, WorkerAgent
 
-    config = get_config()
-    model = args.model or config.get("executor.model", DEFAULT_MODEL)
     project_path = os.path.abspath(args.project or os.getcwd())
+    config = get_config(project_path=project_path)
+    model = args.model or config.get("executor.model", DEFAULT_MODEL)
+    activate_project_context(project_path, model=model)
 
     # Build workers from --workers flag (comma-separated role names)
     workers = None
@@ -843,10 +990,11 @@ def cmd_watch(args):
         print(f"{Fore.RED}[ERROR]{Fore.RESET} Task file not found: {task_path}")
         sys.exit(1)
 
-    config = get_config()
-    model = args.model or config.get("executor.model", DEFAULT_MODEL)
     project_path = os.path.abspath(args.project or os.getcwd())
+    config = get_config(project_path=project_path)
+    model = args.model or config.get("executor.model", DEFAULT_MODEL)
     poll_interval = getattr(args, "interval", 2)
+    activate_project_context(project_path, model=model)
 
     print(f"{Fore.CYAN}[WATCH]{Fore.RESET} Watching: {task_path}")
     print(f"{Fore.CYAN}[WATCH]{Fore.RESET} Poll interval: {poll_interval}s — press Ctrl+C to stop.\n")
@@ -906,10 +1054,16 @@ def cmd_watch(args):
 
 def cmd_status(args):
     """Check Ollama connection and model status."""
-    config = get_config()
-    model = config.get("executor.model", DEFAULT_MODEL)
+    project_path = os.getcwd()
+    model = resolve_cli_model(
+        getattr(args, "model", None),
+        project_path=project_path,
+        allow_selection=getattr(args, "select_model", False),
+    )
+    activate_project_context(project_path, model=model)
     agent = CawlAgent(model=model)
     print(agent.get_status())
+    print_model_inventory(model)
 
 
 def cmd_ui(args):
@@ -922,28 +1076,25 @@ def cmd_ui(args):
         sys.exit(1)
 
     project_path = os.path.abspath(args.project or os.getcwd())
-    config = get_config()
-    model = args.model or config.get("executor.model", DEFAULT_MODEL)
+    model = resolve_cli_model(
+        args.model,
+        project_path=project_path,
+        allow_selection=getattr(args, "select_model", False),
+    )
+    activate_project_context(project_path, model=model)
     launch_ui(project_path=project_path, model=model)
 
 
 def cmd_shell(args):
-    """Launch the interactive CawlShell (rich terminal with history, completion, etc.)."""
-    try:
-        from cawl.shell import CawlShell
-    except ImportError as e:
-        print(f"[ERROR] No se pudo cargar CawlShell: {e}")
-        print("Asegúrate de tener prompt_toolkit instalado: pip install -e .")
-        sys.exit(1)
-
+    """Launch the interactive shell alias."""
     project_path = os.path.abspath(args.project or os.getcwd())
-    config = get_config()
-    model = args.model or config.get("executor.model", DEFAULT_MODEL)
-
-    shell = CawlShell(project_path=project_path, model=model)
-    if not shell.initialize():
-        sys.exit(1)
-    shell.run()
+    model = resolve_cli_model(
+        args.model,
+        project_path=project_path,
+        allow_selection=getattr(args, "select_model", False),
+    )
+    activate_project_context(project_path, model=model)
+    launch_interactive_shell(project_path=project_path, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -959,15 +1110,20 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # run
-    run_parser = subparsers.add_parser("run", help="Run a task or start REPL")
+    run_parser = subparsers.add_parser("run", help="Run a task or start the interactive shell")
     run_parser.add_argument("-c", "--query", type=str, default=None, dest="query",
                             help="Single query/command to run and exit")
     run_parser.add_argument("--task", type=str, default=None,
-                            help="Path to task .md file (plan→execute loop)")
+                            help="Path to task .md file (plan->execute loop)")
     run_parser.add_argument("--project", type=str, default=None,
                             help="Project directory (default: cwd)")
     run_parser.add_argument("--model", type=str, default=None,
                             help=f"Ollama model to use (default from config.yaml)")
+    run_parser.add_argument("--select-model", action="store_true", default=False,
+                            help="Mostrar los modelos locales de Ollama y elegir uno al iniciar")
+    run_parser.add_argument("--execution-mode", type=str, default=None,
+                            choices=["interactive", "trusted", "dry-run", "safe-only"],
+                            help="Command execution mode (default: interactive)")
     run_parser.set_defaults(func=cmd_run)
 
     # plan
@@ -989,6 +1145,10 @@ def main():
 
     # status
     status_parser = subparsers.add_parser("status", help="Check Ollama connection and model")
+    status_parser.add_argument("--model", type=str, default=None,
+                               help="Modelo a verificar (default from config.yaml)")
+    status_parser.add_argument("--select-model", action="store_true", default=False,
+                               help="Elegir un modelo local antes de consultar el estado")
     status_parser.set_defaults(func=cmd_status)
 
     # multi
@@ -1022,6 +1182,8 @@ def main():
                            help="Project directory to open (default: cwd)")
     ui_parser.add_argument("--model", type=str, default=None,
                            help="Ollama model to use (default from config.yaml)")
+    ui_parser.add_argument("--select-model", action="store_true", default=False,
+                           help="Mostrar los modelos locales de Ollama y elegir uno al iniciar")
     ui_parser.set_defaults(func=cmd_ui)
 
     # shell
@@ -1032,19 +1194,18 @@ def main():
                               help="Project directory (default: cwd)")
     shell_parser.add_argument("--model", type=str, default=None,
                               help="Ollama model to use (default from config.yaml)")
+    shell_parser.add_argument("--select-model", action="store_true", default=False,
+                              help="Mostrar los modelos locales de Ollama y elegir uno al iniciar")
     shell_parser.set_defaults(func=cmd_shell)
 
     args = parser.parse_args()
 
     if not args.command:
-        # No subcommand → default to REPL
-        config = get_config()
-        model = config.get("executor.model", DEFAULT_MODEL)
-        agent = CawlAgent(model=model)
-        if agent.initialize():
-            agent.run_repl()
-        else:
-            sys.exit(1)
+        # No subcommand -> default to the interactive shell
+        project_path = os.getcwd()
+        model = resolve_cli_model(None, project_path=project_path)
+        activate_project_context(project_path, model=model)
+        launch_interactive_shell(project_path=project_path, model=model)
         return
 
     args.func(args)
