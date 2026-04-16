@@ -1,9 +1,12 @@
 """Executor module - executes individual plan steps using tools."""
 
 import json
+import os
 import re
 import hashlib
 import threading
+from typing import Optional
+
 from cawl.tools.registry import get_tool, TOOLS, TOOL_DESCRIPTIONS
 from cawl.core.llm_client import get_llm_client
 from cawl.core.status import status
@@ -20,9 +23,15 @@ _tool_cache_lock = threading.Lock()
 _tool_cache_enabled = True
 
 
+def _get_cache_scope() -> str:
+    """Return the current execution scope for cache isolation."""
+    return os.path.abspath(os.getcwd())
+
+
 def _get_cache_key(tool_name: str, tool_input: dict) -> str:
     """Generate a cache key for a tool call."""
-    key_str = f"{tool_name}:{json.dumps(tool_input, sort_keys=True)}"
+    scope = _get_cache_scope()
+    key_str = f"{scope}:{tool_name}:{json.dumps(tool_input, sort_keys=True)}"
     return hashlib.md5(key_str.encode()).hexdigest()
 
 
@@ -77,7 +86,14 @@ def reset_always_run() -> None:
         _always_run = False
 
 
-def execute_step(step: dict, task_text: str = None, previous_results: list = None) -> dict:
+def execute_step(
+    step: dict,
+    task_text: str = None,
+    previous_results: list = None,
+    *,
+    project_path: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
     """
     Execute a single plan step using LLM to decide on the action.
 
@@ -88,6 +104,8 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
         step: Dict with 'id', 'task', and optionally 'tools'.
         task_text: Full original task description for context.
         previous_results: List of results from previous steps (for context).
+        project_path: Active project root for config/model resolution.
+        model: Explicit model override for the executor.
 
     Returns:
         Dict with 'action', 'tool', 'input', 'output'.
@@ -97,7 +115,7 @@ def execute_step(step: dict, task_text: str = None, previous_results: list = Non
     with _always_run_lock:
         confirm_required = config.get("executor.confirm_commands", True) and not _always_run
     max_json_retries = config.get("executor.max_json_retries", 2)
-    client = get_llm_client()
+    client = get_llm_client(model=model, project_path=project_path)
 
     system_prompt = (
         "You are an AI agent executor. Given a task step, decide whether to call a tool "

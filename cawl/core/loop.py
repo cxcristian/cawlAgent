@@ -2,6 +2,7 @@
 
 from colorama import Fore, Style
 
+from cawl.config.config import get_config
 from cawl.tasks.parser import parse_task_file
 from cawl.core.planner import create_plan
 from cawl.core.executor import execute_step
@@ -32,13 +33,20 @@ def run_loop(task_file: str = None, task_text: str = None, project_path: str = "
         return []
 
     # 2. Load project-scoped memory
+    config = get_config(project_path=project_path)
+    model = config.get("executor.model")
     memory = ProjectMemory(project_path)
     recent_runs = memory.get_recent_runs(limit=5)
 
     # 3. Generate plan
     status.emit("planning", "Generando plan...")
     print(f"{Fore.CYAN}[INFO]{Fore.RESET} Generating plan...")
-    plan = create_plan(task_text, memory_context=recent_runs)
+    plan = create_plan(
+        task_text,
+        memory_context=recent_runs,
+        project_path=project_path,
+        model=model,
+    )
     print(f"{Fore.CYAN}[INFO]{Fore.RESET} Plan: {len(plan['steps'])} step(s).")
 
     # 4. Execute each step
@@ -47,7 +55,13 @@ def run_loop(task_file: str = None, task_text: str = None, project_path: str = "
         try:
             status.emit("step", f"Paso {step['id']}: {step['task'][:60]}")
             print(f"\n{Style.BRIGHT}{Fore.BLUE}--- Step {step['id']}: {step['task']} ---")
-            result = execute_step(step, task_text=task_text, previous_results=results)
+            result = execute_step(
+                step,
+                task_text=task_text,
+                previous_results=results,
+                project_path=project_path,
+                model=model,
+            )
             if isinstance(result, dict):
                 result["step"] = step
             results.append(result)

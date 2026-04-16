@@ -26,6 +26,7 @@ from cawl.shell.completer import CawlCompleter
 from cawl.shell.formatter import OutputFormatter
 from cawl.core.llm_client import OllamaClient, DEFAULT_MODEL
 from cawl.core.ollama_models import list_local_ollama_models, prompt_for_model_selection
+from cawl.core.executor import clear_tool_cache
 from cawl.tools.registry import TOOLS, TOOL_DESCRIPTIONS, get_tool
 from cawl.core.status import status
 from cawl.config.config import get_config, reload_config
@@ -360,6 +361,7 @@ class CawlShell:
         if os.path.exists(resolved):
             os.chdir(resolved)
             reload_config(project_path=resolved)
+            clear_tool_cache()
             print(f"  Project changed to: {resolved}")
             self.system_prompt = self._build_system_prompt()
         else:

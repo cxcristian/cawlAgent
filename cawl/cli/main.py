@@ -35,16 +35,14 @@ from cawl.core.ollama_models import (
 from cawl.core.loop import run_loop
 from cawl.core.status import status
 from cawl.core.confirmation import (
-    confirm_command_cli, 
-    get_confirmation_state, 
-    reset_confirmation_state,
+    confirm_command_cli,
+    get_confirmation_state,
     ConfirmationResponse,
-    ExecutionMode,
-    set_execution_mode
 )
+from cawl.core.executor import clear_tool_cache
 from cawl.memory.project_memory import ProjectMemory
 from cawl.tasks.parser import parse_task_file
-from cawl.tools.registry import TOOLS, TOOL_DESCRIPTIONS, get_tool
+from cawl.tools.registry import TOOL_DESCRIPTIONS, get_tool
 
 init(autoreset=True)
 
@@ -242,20 +240,6 @@ BANNER = f"""
 {Fore.LIGHTRED_EX}{Style.BRIGHT}    Archimagos Dominus Belisarius Cawl
 """
 
-HELP_TEXT = f"""
-{Fore.CYAN}Comandos disponibles:{Style.RESET_ALL}
-  /help        - Mostrar esta ayuda
-  /status      - Verificar conexión a Ollama
-  /models      - Listar modelos locales detectados
-  /tools       - Listar herramientas disponibles
-  /clear       - Limpiar historial de chat
-  /mode        - Mostrar modo de ejecución actual
-  /mode <modo> - Cambiar modo (interactive|trusted|dry-run|safe-only)
-  /quit        - Salir del agente
-  (cualquier otro texto se envía al agente con soporte de herramientas)
-"""
-
-
 def resolve_cli_model(
     requested_model: Optional[str],
     *,
@@ -293,6 +277,7 @@ def activate_project_context(project_path: str, model: Optional[str] = None) -> 
     """Align cwd, config, and shared Ollama client with the selected project."""
     os.chdir(project_path)
     config = reload_config(project_path=project_path)
+    clear_tool_cache()
     if model:
         config.set("executor.model", model)
         config.set("planner.model", model)
@@ -319,7 +304,7 @@ def launch_interactive_shell(project_path: str, model: str) -> None:
 # ---------------------------------------------------------------------------
 
 class CawlAgent:
-    """Main agent class for interactive REPL and single-command modes."""
+    """Agent class for single-command execution and status checks."""
 
     def __init__(
         self,
@@ -373,15 +358,6 @@ class CawlAgent:
             return status
         except ConnectionError as e:
             return f"Ollama: NOT CONNECTED\n{e}"
-
-    def set_execution_mode(self, mode_str: str) -> str:
-        """Set the execution mode for command confirmation."""
-        try:
-            mode = ExecutionMode(mode_str.lower())
-            set_execution_mode(mode)
-            return f"Modo cambiado a: {mode.value}"
-        except ValueError:
-            return f"Modo inválido: {mode_str}. Opciones: interactive, trusted, dry-run, safe-only"
 
     def _trim_history(self) -> None:
         """
@@ -550,89 +526,6 @@ class CawlAgent:
             self.chat_history.append({"role": "assistant", "content": final["content"]})
         return final["content"] or "[INFO] No se generó respuesta."
 
-    def clear_chat(self) -> None:
-        """Clear chat history."""
-        self.chat_history = []
-
-    def run_repl(self) -> None:
-        """Run interactive REPL loop."""
-        print(BANNER)
-        print(HELP_TEXT)
-
-        while True:
-            try:
-                user_input = input(f"{Fore.CYAN}cawl>{Style.RESET_ALL} ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\n[EXIT] Goodbye!")
-                break
-
-            if not user_input:
-                continue
-
-            if user_input.startswith("/"):
-                self._handle_command(user_input)
-                continue
-
-            if not self.client:
-                print(f"{Fore.RED}[ERROR]{Fore.RESET} Not connected. Run /status for details.")
-                continue
-
-            try:
-                spinner = TerminalSpinner()
-                spinner.start()
-                response = self.chat_with_tools_loop(user_input, streaming=self.streaming_enabled)
-                spinner.stop()
-                print(f"\n{response}\n")
-            except Exception as e:
-                spinner.stop()
-                print(f"{Fore.RED}[ERROR]{Fore.RESET} {e}")
-
-    def _handle_command(self, command: str) -> None:
-        """Handle slash commands in REPL mode."""
-        cmd = command.lower().strip()
-
-        if cmd in ("/quit", "/exit", "/q"):
-            print("[EXIT] Goodbye!")
-            sys.exit(0)
-        elif cmd == "/help":
-            print(HELP_TEXT)
-        elif cmd == "/status":
-            print(self.get_status())
-        elif cmd == "/models":
-            print_model_inventory(self.model)
-        elif cmd == "/tools":
-            print(f"\n{Fore.CYAN}Available tools:{Style.RESET_ALL}\n{TOOL_DESCRIPTIONS}\n")
-        elif cmd == "/clear":
-            self.clear_chat()
-            print(f"{Fore.GREEN}[INFO]{Fore.RESET} Chat history cleared.")
-        elif cmd.startswith("/mode"):
-            parts = cmd.split()
-            if len(parts) == 1:
-                from cawl.core.confirmation import get_confirmation_state
-                state = get_confirmation_state()
-                print(f"{Fore.CYAN}[MODE]{Fore.RESET} Current execution mode: {state.execution_mode.value}")
-            elif len(parts) == 2:
-                from cawl.core.confirmation import get_confirmation_state, ExecutionMode
-                mode_map = {
-                    "interactive": ExecutionMode.INTERACTIVE,
-                    "trusted": ExecutionMode.TRUSTED,
-                    "dry-run": ExecutionMode.DRY_RUN,
-                    "safe-only": ExecutionMode.SAFE_ONLY,
-                }
-                mode_name = parts[1]
-                if mode_name in mode_map:
-                    state = get_confirmation_state()
-                    state.execution_mode = mode_map[mode_name]
-                    print(f"{Fore.GREEN}[MODE]{Fore.RESET} Execution mode changed to: {mode_name}")
-                else:
-                    print(f"{Fore.RED}[ERROR]{Fore.RESET} Invalid mode. Use: interactive, trusted, dry-run, safe-only")
-            else:
-                print(f"{Fore.CYAN}[USAGE]{Fore.RESET} /mode [interactive|trusted|dry-run|safe-only]")
-        else:
-            print(f"{Fore.RED}[ERROR]{Fore.RESET} Unknown command: {cmd}")
-            print("Type /help for available commands.")
-
-
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
@@ -721,7 +614,12 @@ def cmd_plan(args):
     task_text = parse_task_file(args.task)
 
     from cawl.core.planner import create_plan
-    plan = create_plan(task_text, memory_context=recent_runs)
+    plan = create_plan(
+        task_text,
+        memory_context=recent_runs,
+        project_path=project_path,
+        model=get_config(project_path=project_path).get("executor.model"),
+    )
 
     print(f"\n{Fore.CYAN}Plan for:{Style.RESET_ALL} {task_text.strip()[:80]}...\n")
     for step in plan["steps"]:

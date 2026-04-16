@@ -2,6 +2,8 @@
 
 import json
 import re
+from typing import Optional
+
 from cawl.core.llm_client import get_llm_client
 from cawl.core.status import status
 from cawl.tools.registry import TOOL_DESCRIPTIONS
@@ -26,7 +28,13 @@ def _extract_json(text: str) -> str:
     return text.strip()
 
 
-def create_plan(task_text: str, memory_context: list = None) -> dict:
+def create_plan(
+    task_text: str,
+    memory_context: list = None,
+    *,
+    project_path: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
     """
     Create a plan from task text using LLM.
 
@@ -36,11 +44,13 @@ def create_plan(task_text: str, memory_context: list = None) -> dict:
     Args:
         task_text: The task to decompose into steps.
         memory_context: Optional list of previous run summaries from ProjectMemory.
+        project_path: Active project root for config/model resolution.
+        model: Explicit model override for the planner.
 
     Returns:
         dict with 'steps' list. Each step has: id, task, tools.
     """
-    client = get_llm_client()
+    client = get_llm_client(model=model, project_path=project_path)
 
     system_prompt = (
         "You are a professional task planner for an AI agent. "
