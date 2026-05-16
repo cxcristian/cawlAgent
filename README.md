@@ -207,7 +207,7 @@ Planner → Executor    Confirmation System
   |                    └─ interactive / trusted / dry-run / safe-only
   v
 Tool Registry
-  ├─ file_tools (read, write, list, grep, glob)
+  ├─ file_tools (read, write, list, grep, glob, mkdir)
   ├─ system_tools (run_command — sanitizado, timeout, kill tree)
   └─ web_tools (search_web)
         |
@@ -250,7 +250,7 @@ cawl_agent/
 │   │   └── parser.py              # Parser de archivos .md
 │   └── tools/
 │       ├── registry.py            # Registro y descripción de tools
-│       ├── file_tools.py          # read, write, list, grep, glob
+│       ├── file_tools.py          # read, write, list, grep, glob, mkdir
 │       ├── system_tools.py        # run_command (sanitizado)
 │       └── web_tools.py           # search_web (DuckDuckGo)
 ├── tareas/                        # Archivos de tarea .md

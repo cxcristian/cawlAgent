@@ -170,7 +170,7 @@ def build_system_prompt(project_root: str = "") -> str:
         "  · `cawl status` para verificar Ollama.\n"
         "- Flujo recomendado para proyectos nuevos: `cawl init` -> completar `parametros/contexto.md` -> crear tarea en `tareas/` -> ejecutar con `cawl run --task ...`.\n"
         "- Si el usuario es novato, recomienda `cawl init` y luego `cawl run`.\n"
-        "- Herramientas disponibles: read_file, write_file, list_files, grep_search, glob_files, run_command, search_web.\n"
+        "- Herramientas disponibles: read_file, write_file, list_files, grep_search, glob_files, make_directory, run_command, search_web.\n"
         "ESTILO DE RESPUESTA:\n"
         "- Responde SIEMPRE en espanol.\n"
         "- Usa un tono profesional, directo y colaborativo.\n"

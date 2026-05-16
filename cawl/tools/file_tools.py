@@ -181,7 +181,27 @@ def write_file(path: str, content: str, mode: str = "write") -> str:
         return f"[ERROR] Failed to write file: {e}"
 
 
-def list_files(path: str, max_depth: int = 1, show_hidden: bool = False) -> str:
+def make_directory(path: str) -> str:
+    """
+    Create a directory. Creates parent directories if needed.
+
+    Args:
+        path: Path to the directory to create.
+
+    Returns:
+        Confirmation string or error message.
+    """
+    fpath = _resolve_path_input(path)
+    try:
+        fpath.mkdir(parents=True, exist_ok=True)
+        return f"Directory created: {path}"
+    except PermissionError:
+        return f"[ERROR] Permission denied: {path}"
+    except OSError as e:
+        return f"[ERROR] Failed to create directory: {e}"
+
+
+def list_files(path: str, max_depth: int = 1, show_hidden: bool = False, **kwargs) -> str:
     """
     List files and subdirectories within a directory.
 

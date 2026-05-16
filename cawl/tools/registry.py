@@ -4,7 +4,7 @@ Includes all rich tools: read_file, write_file, list_files,
 grep_search, glob_files, run_command, and search_web.
 """
 
-from cawl.tools.file_tools import read_file, write_file, list_files, grep_search, glob_files
+from cawl.tools.file_tools import read_file, write_file, list_files, grep_search, glob_files, make_directory
 from cawl.tools.system_tools import run_command
 from cawl.tools.web_tools import search_web
 
@@ -14,6 +14,7 @@ TOOLS = {
     "list_files": list_files,
     "grep_search": grep_search,
     "glob_files": glob_files,
+    "make_directory": make_directory,
     "run_command": run_command,
     "search_web": search_web,
 }
@@ -29,6 +30,7 @@ TOOL_DESCRIPTIONS = (
     "Search for regex pattern across files.\n"
     "- glob_files(pattern: str, path: str = '.'): Find files by glob pattern "
     "(e.g. '**/*.py').\n"
+    "- make_directory(path: str): Create a directory (creates parent dirs if needed).\n"
     "- run_command(command: str, timeout: int = 60): Execute a terminal command "
     "(bash, cmd, etc). Process is killed automatically after timeout seconds.\n"
     "- search_web(query: str, max_results: int = 5): Search the web using DuckDuckGo. "
