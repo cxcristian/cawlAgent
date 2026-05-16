@@ -282,37 +282,35 @@ def grep_search(
             return file_results
 
         if len(files_to_search) <= 10:
-            # Small number of files - sequential is fine
             for fpath in files_to_search:
-                file_results = search_file(fpath)
-                results.extend(file_results)
                 if len(results) >= limit:
                     break
+                file_results = search_file(fpath)
+                results.extend(file_results)
         else:
-            # Large number of files - use thread pool
-            max_workers = min(8, len(files_to_search))  # Cap at 8 threads
+            max_workers = min(8, len(files_to_search))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_file = {
                     executor.submit(search_file, fpath): fpath
                     for fpath in files_to_search
                 }
-                
                 for future in as_completed(future_to_file):
-                    file_results = future.result()
-                    results.extend(file_results)
                     if len(results) >= limit:
                         break
+                    file_results = future.result()
+                    results.extend(file_results)
     except Exception as e:
         return f"[ERROR] Search failed: {e}"
 
     if not results:
         return f"No matches found for pattern '{pattern}'."
 
-    lines = [f"Found {len(results)} match(es) for '{pattern}':", ""]
-    for fpath, line_num, line_text in results:
+    display_results = results[:limit]
+    lines = [f"Found {len(display_results)} match(es) for '{pattern}':", ""]
+    for fpath, line_num, line_text in display_results:
         lines.append(f"{fpath}:{line_num}: {line_text}")
-    if len(results) >= limit:
-        lines.append(f"\n[Showing first {limit} matches only]")
+    if len(results) > limit:
+        lines.append(f"\n[Showing first {limit} matches only ({len(results)} total)]")
 
     return "\n".join(lines)
 
@@ -335,7 +333,7 @@ def glob_files(pattern: str, path: str = ".") -> str:
 
     try:
         if "**" in pattern:
-            clean_pattern = pattern.lstrip("*").lstrip("/")
+            clean_pattern = pattern[3:] if pattern.startswith("**/") else pattern
             matches = list(search_path.rglob(clean_pattern))
         else:
             matches = list(search_path.glob(pattern))

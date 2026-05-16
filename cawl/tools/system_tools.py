@@ -1,5 +1,6 @@
 """System tools for terminal and OS interactions."""
 
+import os
 import subprocess
 import threading
 import sys
@@ -59,6 +60,13 @@ def run_command(command: str, timeout: int = None) -> str:
     """
     if timeout is None:
         timeout = _get_default_timeout()
+
+    # Basic sanitization: reject commands with known dangerous patterns
+    _DANGEROUS_PATTERNS = ["$((", "`", "${", "|&", ";&", "\\x" ]
+    for pat in _DANGEROUS_PATTERNS:
+        if pat in command:
+            return f"[ERROR] Command contains dangerous pattern '{pat}' and was blocked."
+
     try:
         process = subprocess.Popen(
             command,
@@ -84,16 +92,20 @@ def run_command(command: str, timeout: int = None) -> str:
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            process.kill()
+            _kill_process_tree(process)
             # Give stream thread a moment to drain remaining output
             done_event.wait(timeout=2)
             stream_thread.join(timeout=3)
             full_output = "".join(output_buffer)
-            return (
+            timeout_msg = (
                 f"[TIMEOUT] Command exceeded {timeout}s limit and was killed.\n"
                 f"Command: {command}\n"
-                f"Output before timeout:\n{full_output}" if full_output else ""
             )
+            if full_output:
+                timeout_msg += f"Output before timeout:\n{full_output}"
+            else:
+                timeout_msg += "(no output captured before timeout)"
+            return timeout_msg
 
         # Wait for stream thread to finish reading all output
         done_event.wait(timeout=5)
@@ -107,3 +119,18 @@ def run_command(command: str, timeout: int = None) -> str:
         return full_output
     except Exception as e:
         return f"[ERROR] executing command: {e}"
+
+
+def _kill_process_tree(process: subprocess.Popen):
+    """Kill a process and its entire process tree."""
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True, timeout=5,
+            )
+        else:
+            import signal
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except Exception:
+        process.kill()

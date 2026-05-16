@@ -367,7 +367,11 @@ class CawlShell:
             return
         resolved = self.context.set_project(path)
         if os.path.exists(resolved):
-            os.chdir(resolved)
+            try:
+                os.chdir(resolved)
+            except PermissionError:
+                print(self.formatter.format_error(f"Permiso denegado para acceder a: {resolved}"))
+                return
             reload_config(project_path=resolved)
             clear_tool_cache()
             self.system_prompt = self._build_system_prompt()
@@ -402,86 +406,47 @@ class CawlShell:
         messages.extend(self.chat_history[:-1])
         messages.append({"role": "user", "content": message})
 
-        iterations = 0
-        while iterations < self.MAX_TOOL_ITERATIONS:
-            iterations += 1
-            try:
-                response = self.client.chat_with_tools(messages=messages, temperature=0.1)
-            except Exception as e:
-                print(self.formatter.format_error(str(e)))
-                return
+        def _on_tool_call(tool_name, tool_args):
+            print(self.formatter.format_tool_call(tool_name, tool_args))
 
-            if not response["tool_calls"]:
-                if response["content"]:
-                    if self._should_retry_for_tool_use(message, response["content"]):
-                        messages.append({
-                            "role": "system",
-                            "content": (
-                                "Tu respuesta anterior rechazo usar herramientas de forma incorrecta. "
-                                "Tienes acceso real al proyecto activo y debes usar las herramientas disponibles "
-                                f"para inspeccionar archivos bajo {self.context.project_path}. "
-                                "Vuelve a responder y usa una herramienta si el usuario pidio mirar archivos, carpetas o contenido del proyecto."
-                            ),
-                        })
-                        continue
-                    self.chat_history.append({"role": "assistant", "content": response["content"]})
-                    print("\n" + self.formatter.format_response(response["content"]))
-                    print("\n" + self.formatter.format_note("Tiempo", self.formatter.elapsed()) + "\n")
-                return
+        def _on_tool_result(tool_name, result_str):
+            print(self.formatter.format_tool_result(tool_name, result_str))
 
-            for tool_call in response["tool_calls"]:
-                tool_name = tool_call["name"]
-                tool_args = tool_call.get("arguments", {})
-                print(self.formatter.format_tool_call(tool_name, tool_args))
+        def _confirm(tool_name, tool_args):
+            from cawl.core.confirmation import ConfirmationResponse, confirm_command_shell
+            cmd = tool_args.get("command", str(tool_args))
+            working_dir = tool_args.get("working_dir")
+            timeout = get_config().get("executor.command_timeout", 60)
+            resp, edited = confirm_command_shell(
+                cmd, working_dir=working_dir, timeout=timeout, state=None,
+            )
+            if resp == ConfirmationResponse.NO:
+                print(self.formatter.format_note("Comando omitido", "Command execution denied by user."))
+                return False, None
+            if resp == ConfirmationResponse.EDIT and edited:
+                new_args = dict(tool_args)
+                new_args["command"] = edited
+                print(self.formatter.format_note("Comando editado", edited))
+                return True, new_args
+            return True, None
 
-                if tool_name == "run_command":
-                    from cawl.core.confirmation import ConfirmationResponse, confirm_command_shell
+        def _retry_check(content: str) -> bool:
+            return self._should_retry_for_tool_use(message, content)
 
-                    cmd = tool_args.get("command", str(tool_args))
-                    working_dir = tool_args.get("working_dir")
-                    timeout = get_config().get("executor.command_timeout", 60)
-
-                    response_type, edited_command = confirm_command_shell(
-                        cmd,
-                        working_dir=working_dir,
-                        timeout=timeout,
-                        state=None,
-                    )
-                    if response_type == ConfirmationResponse.NO:
-                        result_str = "Command execution denied by user."
-                        print(self.formatter.format_note("Comando omitido", result_str))
-                        messages.append({"role": "user", "content": f"RESULTADO de {tool_name}: {result_str}"})
-                        continue
-                    if response_type == ConfirmationResponse.EDIT and edited_command:
-                        tool_args["command"] = edited_command
-                        print(self.formatter.format_note("Comando editado", edited_command))
-
-                func = get_tool(tool_name)
-                if func is None:
-                    result_str = f"[ERROR] Unknown tool: {tool_name}"
-                else:
-                    try:
-                        result = func(**tool_args) if isinstance(tool_args, dict) else func(tool_args)
-                        result_str = str(result)
-                    except Exception as e:
-                        result_str = f"[ERROR] Tool execution failed: {e}"
-
-                print(self.formatter.format_tool_result(tool_name, result_str))
-                messages.append({"role": "user", "content": f"RESULTADO de {tool_name}: {result_str}"})
-
-        messages.append({
-            "role": "system",
-            "content": (
-                "Has alcanzado el numero maximo de llamadas a herramientas. "
-                "Proporciona tu respuesta final basada en la informacion recopilada."
-            ),
-        })
+        from cawl.core.tool_loop import run_tool_loop
         try:
-            final = self.client.chat_with_tools(messages=messages, temperature=0.1)
-            if final["content"]:
-                self.chat_history.append({"role": "assistant", "content": final["content"]})
-                print("\n" + self.formatter.format_response(final["content"]))
+            result = run_tool_loop(
+                client=self.client,
+                messages=messages,
+                chat_history=self.chat_history,
+                max_iterations=self.MAX_TOOL_ITERATIONS,
+                on_tool_call=_on_tool_call,
+                on_tool_result=_on_tool_result,
+                confirm_func=_confirm,
+                retry_check=_retry_check,
+            )
+            if result:
+                print("\n" + self.formatter.format_response(result))
+                print("\n" + self.formatter.format_note("Tiempo", self.formatter.elapsed()) + "\n")
         except Exception as e:
             print(self.formatter.format_error(str(e)))
-
-        print("\n" + self.formatter.format_note("Iteraciones maximas", self.formatter.elapsed()) + "\n")

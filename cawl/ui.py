@@ -227,7 +227,8 @@ class AgentWorker(QThread):
         self.history = history
         self.system_prompt = system_prompt
         self.model = model
-        self._run_allowed = True  # set to False by main thread if user denies
+        self._run_allowed = False
+        self._confirm_event = threading.Event()
 
         # Load configurable constants
         from cawl.config.config import get_config
@@ -238,9 +239,8 @@ class AgentWorker(QThread):
         try:
             from cawl.core.llm_client import OllamaClient
             from cawl.core.status import status
-            from cawl.tools.registry import get_tool
+            from cawl.core.tool_loop import run_tool_loop
 
-            # Subscribe to status events and forward to UI via Qt signal
             def _on_status(event_type: str, message: str):
                 self.status_update.emit(event_type, message)
 
@@ -253,60 +253,34 @@ class AgentWorker(QThread):
                 messages.extend(self.history)
                 messages.append({"role": "user", "content": self.message})
 
-                MAX_ITER = self.max_iter
-                for _ in range(MAX_ITER):
-                    self.status_update.emit("thinking", "Razonando...")
-                    response = client.chat_with_tools(messages=messages, temperature=0.1)
+                def _on_tool_call(tool_name, tool_args):
+                    self.status_update.emit(
+                        "tool_call", f"{tool_name}({str(tool_args)[:60]})"
+                    )
 
-                    if not response["tool_calls"]:
-                        self.response_ready.emit(response["content"])
-                        return
+                def _on_tool_result(tool_name, result_str):
+                    preview = result_str[:80].replace("\n", " ")
+                    self.status_update.emit("tool_result", f"{tool_name} → {preview}")
 
-                    for tool_call in response["tool_calls"]:
-                        tool_name = tool_call["name"]
-                        tool_args = tool_call.get("arguments", {})
+                def _confirm(tool_name, tool_args):
+                    cmd = tool_args.get("command", str(tool_args))
+                    self._run_allowed = False
+                    self._confirm_event.clear()
+                    self.confirm_run.emit(cmd)
+                    while self.isRunning() and not self._confirm_event.wait(timeout=0.05):
+                        pass
+                    return self._run_allowed, None
 
-                        # Confirmation gate for run_command
-                        if tool_name == "run_command":
-                            cmd = tool_args.get("command", str(tool_args))
-                            self._run_allowed = True  # reset per-call
-                            self.confirm_run.emit(cmd)
-                            # Wait for main thread to set _run_allowed
-                            while self.isRunning() and hasattr(self, "_waiting_confirm"):
-                                QThread.msleep(50)
-                            if not self._run_allowed:
-                                result_str = "Command execution denied by user."
-                                self.status_update.emit("tool_call", f"{tool_name} → DENIED")
-                                messages.append({
-                                    "role": "user",
-                                    "content": f"RESULTADO de {tool_name}: {result_str}",
-                                })
-                                continue
-
-                        self.status_update.emit(
-                            "tool_call",
-                            f"{tool_name}({str(tool_args)[:60]})"
-                        )
-
-                        func = get_tool(tool_name)
-                        if func is None:
-                            result_str = f"[ERROR] Unknown tool: {tool_name}"
-                        else:
-                            try:
-                                result = func(**tool_args) if isinstance(tool_args, dict) else func(tool_args)
-                                result_str = str(result)
-                                preview = result_str[:80].replace("\n", " ")
-                                self.status_update.emit("tool_result", f"{tool_name} → {preview}")
-                            except Exception as e:
-                                result_str = f"[ERROR] {e}"
-                                self.status_update.emit("error", str(e)[:80])
-
-                        messages.append({
-                            "role": "user",
-                            "content": f"RESULTADO de {tool_name}: {result_str}",
-                        })
-
-                self.response_ready.emit("[INFO] Máximo de iteraciones alcanzado.")
+                result = run_tool_loop(
+                    client=client,
+                    messages=messages,
+                    chat_history=[],
+                    max_iterations=self.max_iter,
+                    on_tool_call=_on_tool_call,
+                    on_tool_result=_on_tool_result,
+                    confirm_func=_confirm,
+                )
+                self.response_ready.emit(result)
 
             finally:
                 status.unsubscribe(_on_status)
@@ -802,7 +776,6 @@ class CawlWindow(QMainWindow):
 
     def _on_confirm_run(self, command: str):
         """Show a modal confirmation dialog for run_command in the UI."""
-        self.worker._waiting_confirm = True
         reply = QMessageBox.question(
             self,
             "Confirmar ejecución de comando",
@@ -811,7 +784,7 @@ class CawlWindow(QMainWindow):
             QMessageBox.No,
         )
         self.worker._run_allowed = reply == QMessageBox.Yes
-        del self.worker._waiting_confirm
+        self.worker._confirm_event.set()
 
     def _show_status_bubble(self):
         """Insert an animated status bubble into the chat panel."""

@@ -76,6 +76,9 @@ HIGH_RISK_COMMANDS = {
     "shutdown", "restart", "kill", "taskkill",
     # Disk operations
     "format", "diskpart",
+    # Windows dangerous commands
+    "powershell", "pwsh", "reg", "sc", "net",
+    "schtasks", "takeown", "attrib", "cacls", "wmic",
 }
 
 CRITICAL_PATTERNS = [
@@ -118,7 +121,7 @@ def classify_command(command: str) -> Tuple[RiskLevel, str]:
     has_recursive = "-r" in command_stripped or "--recursive" in command_stripped
     
     # Match against known commands
-    first_word = command_stripped.split()[0] if command_stripped else ""
+    first_word = command_stripped.split()[0] if command_stripped and command_stripped.split() else ""
     
     # Check exact matches first
     for cmd in LOW_RISK_COMMANDS:

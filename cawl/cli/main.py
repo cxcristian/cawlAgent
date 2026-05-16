@@ -141,7 +141,7 @@ def build_system_prompt(project_root: str = "") -> str:
             f"\nCONTEXTO DEL PROYECTO:\n"
             f"- La raíz del proyecto es: {project_root}\n"
             f"- TODOS los paths relativos se resuelven desde esta raíz.\n"
-            f"- Cuando se te pida explorar 'src', significa '{project_root}\\src'.\n"
+            f"- Cuando se te pida explorar 'src', significa '{os.path.join(project_root, 'src')}'.\n"
             f"- Usa paths absolutos cuando sea posible para evitar ambigüedades.\n"
         )
 
@@ -398,103 +398,61 @@ class CawlAgent:
         messages.extend(self.chat_history[:-1])
         messages.append({"role": "user", "content": message})
 
-        iterations = 0
+        def _on_tool_call(tool_name, tool_args):
+            print(
+                f"\n{Fore.YELLOW}[TOOL]{Fore.RESET} "
+                f"Calling: {tool_name}({json.dumps(tool_args, indent=2, ensure_ascii=False)})"
+            )
 
-        while iterations < self.MAX_TOOL_ITERATIONS:
-            iterations += 1
+        def _on_tool_result(tool_name, result_str):
+            preview = result_str[:300] + ("..." if len(result_str) > 300 else "")
+            print(f"{Fore.GREEN}[TOOL RESULT]{Fore.RESET} {preview}")
 
-            if streaming:
-                # Streaming: collect chunks into a buffer, display via spinner
-                # with throttle to avoid flooding the terminal
-                config = get_config()
-                throttle_ms = config.get("executor.streaming_throttle_ms", 200)
-                response_buffer = {"content": ""}
-                _last_emit = [0.0]  # mutable container for closure
+        def _confirm(tool_name, tool_args):
+            cmd = tool_args.get("command", str(tool_args))
+            working_dir = tool_args.get("working_dir")
+            timeout = get_config().get("executor.command_timeout", 60)
+            resp, edited = confirm_command_cli(
+                cmd, working_dir=working_dir, timeout=timeout, state=get_confirmation_state()
+            )
+            if resp == ConfirmationResponse.NO:
+                return False, None
+            if resp == ConfirmationResponse.EDIT and edited:
+                new_args = dict(tool_args)
+                new_args["command"] = edited
+                print(f"{Fore.CYAN}[EDITED]{Fore.RESET} Command changed to: {edited}")
+                return True, new_args
+            return True, None
 
-                def _on_chunk(chunk: str):
-                    response_buffer["content"] += chunk
-                    now = time.monotonic()
-                    if now - _last_emit[0] >= (throttle_ms / 1000.0):
-                        preview = response_buffer["content"][-60:].replace("\n", " ")
-                        status.emit("thinking", preview)
-                        _last_emit[0] = now
+        stream_cb = None
+        if streaming:
+            config = get_config()
+            throttle_ms = config.get("executor.streaming_throttle_ms", 200)
+            response_buffer = {"content": ""}
+            _last_emit = [0.0]
 
-                response = self.client.chat_with_tools(
-                    messages=messages, temperature=0.1, stream=True, stream_callback=_on_chunk
-                )
-            else:
-                response = self.client.chat_with_tools(messages=messages, temperature=0.1)
+            def _on_chunk(chunk: str):
+                response_buffer["content"] += chunk
+                now = time.monotonic()
+                if now - _last_emit[0] >= (throttle_ms / 1000.0):
+                    preview = response_buffer["content"][-60:].replace("\n", " ")
+                    status.emit("thinking", preview)
+                    _last_emit[0] = now
 
-            if not response["tool_calls"]:
-                if response["content"]:
-                    self.chat_history.append({
-                        "role": "assistant",
-                        "content": response["content"],
-                    })
-                return response["content"]
+            stream_cb = _on_chunk
 
-            for tool_call in response["tool_calls"]:
-                tool_name = tool_call["name"]
-                tool_args = tool_call.get("arguments", {})
-
-                print(
-                    f"\n{Fore.YELLOW}[TOOL]{Fore.RESET} "
-                    f"Calling: {tool_name}({json.dumps(tool_args, indent=2, ensure_ascii=False)})"
-                )
-
-                # Confirmation gate for run_command (enhanced)
-                if tool_name == "run_command":
-                    cmd = tool_args.get("command", str(tool_args))
-                    working_dir = tool_args.get("working_dir")
-                    timeout = get_config().get("executor.command_timeout", 60)
-                    
-                    response_type, edited_command = confirm_command_cli(
-                        cmd,
-                        working_dir=working_dir,
-                        timeout=timeout,
-                        state=get_confirmation_state()
-                    )
-                    
-                    if response_type == ConfirmationResponse.NO:
-                        result_str = "Command execution denied by user."
-                        print(f"{Fore.YELLOW}[SKIPPED]{Fore.RESET} {result_str}")
-                        messages.append({"role": "user", "content": f"RESULTADO de {tool_name}: {result_str}"})
-                        continue
-                    elif response_type == ConfirmationResponse.EDIT and edited_command:
-                        tool_args["command"] = edited_command
-                        cmd = edited_command
-                        print(f"{Fore.CYAN}[EDITED]{Fore.RESET} Command changed to: {cmd}")
-
-                func = get_tool(tool_name)
-                if func is None:
-                    result_str = f"[ERROR] Unknown tool: {tool_name}"
-                else:
-                    try:
-                        result = func(**tool_args) if isinstance(tool_args, dict) else func(tool_args)
-                        result_str = str(result)
-                    except Exception as e:
-                        result_str = f"[ERROR] Tool execution failed: {e}"
-
-                preview = result_str[:300] + ("..." if len(result_str) > 300 else "")
-                print(f"{Fore.GREEN}[TOOL RESULT]{Fore.RESET} {preview}")
-
-                messages.append({
-                    "role": "user",
-                    "content": f"RESULTADO de {tool_name}: {result_str}",
-                })
-
-        # Max iterations reached — force final response
-        messages.append({
-            "role": "system",
-            "content": (
-                "Has alcanzado el número máximo de llamadas a herramientas. "
-                "Proporciona tu respuesta final basada en la información recopilada."
-            ),
-        })
-        final = self.client.chat_with_tools(messages=messages, temperature=0.1)
-        if final["content"]:
-            self.chat_history.append({"role": "assistant", "content": final["content"]})
-        return final["content"] or "[INFO] No se generó respuesta."
+        from cawl.core.tool_loop import run_tool_loop
+        return run_tool_loop(
+            client=self.client,
+            messages=messages,
+            chat_history=self.chat_history,
+            max_iterations=self.MAX_TOOL_ITERATIONS,
+            streaming=streaming,
+            stream_callback=stream_cb,
+            on_tool_call=_on_tool_call,
+            on_tool_result=_on_tool_result,
+            confirm_func=_confirm,
+        )
 
 # ---------------------------------------------------------------------------
 # Subcommand handlers
@@ -572,16 +530,16 @@ def cmd_run(args):
 
 def cmd_plan(args):
     """Show the plan for a task without executing."""
-    if not args.task:
-        print("Error: --task is required for 'plan' command.")
-        sys.exit(1)
-
     project_path = os.path.abspath(args.project or os.getcwd())
     activate_project_context(project_path)
     memory = ProjectMemory(project_path)
     recent_runs = memory.get_recent_runs(limit=5)
 
-    task_text = parse_task_file(args.task)
+    try:
+        task_text = parse_task_file(args.task)
+    except Exception as e:
+        print(f"{Fore.RED}[ERROR]{Fore.RESET} Could not read task file: {e}")
+        sys.exit(1)
 
     from cawl.core.planner import create_plan
     plan = create_plan(
@@ -772,7 +730,7 @@ def cmd_pull(args):
     model = config.get("executor.model", DEFAULT_MODEL)
     print(f"{Fore.CYAN}[INFO]{Fore.RESET} Pulling model: {Fore.YELLOW}{model}{Fore.RESET}...")
     try:
-        subprocess.run(["ollama", "pull", model], check=True)
+        subprocess.run(["ollama", "pull", model], check=True, timeout=600)
         print(f"{Fore.GREEN}[SUCCESS]{Fore.RESET} Model {model} is ready.")
     except Exception as e:
         print(f"{Fore.RED}[ERROR]{Fore.RESET} Failed to pull model: {e}")
@@ -815,10 +773,6 @@ def cmd_multi(args):
     )
 
     task = args.command
-    if not task:
-        print("Error: -c / --command es requerido para 'multi'.")
-        sys.exit(1)
-
     print(BANNER)
     print(
         f"{Fore.CYAN}[MULTI]{Fore.RESET} Modo: "

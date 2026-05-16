@@ -86,9 +86,16 @@ def create_plan(
 
     status.emit("planning", "Generando plan de ejecución...")
 
+    config_timeout = 300
+    try:
+        from cawl.config.config import get_config
+        config_timeout = get_config().get("executor.llm_timeout", 300)
+    except Exception:
+        pass
+
     for attempt in range(1 + _MAX_JSON_RETRIES):
         try:
-            response_text = client.chat(messages=messages, json_format=True)
+            response_text = client.chat(messages=messages, json_format=True, timeout=config_timeout)
             clean = _extract_json(response_text)
             plan = json.loads(clean)
 

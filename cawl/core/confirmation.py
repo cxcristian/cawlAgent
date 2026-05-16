@@ -276,10 +276,13 @@ def _parse_shell_response(
     elif answer in ["n", "no"]:
         return ConfirmationResponse.NO, None
     elif answer in ["d", "details"]:
-        # For now, just re-prompt (details shown in prompt)
+        print(f"\nComando: {command}")
         return ConfirmationResponse.NO, None
     elif answer in ["e", "edit"]:
-        # Would need another prompt, for now return NO
+        from prompt_toolkit import prompt as pt_prompt
+        edited = pt_prompt("Nuevo comando (o Enter para cancelar): ", default=command).strip()
+        if edited:
+            return ConfirmationResponse.EDIT, edited
         return ConfirmationResponse.NO, None
     elif answer in ["b", "batch"]:
         state.batch_mode = True
@@ -289,23 +292,6 @@ def _parse_shell_response(
         return ConfirmationResponse.SKIP_ALL, None
     else:
         return ConfirmationResponse.NO, None
-
-
-def should_show_confirmation(command: str, state: ConfirmationState = None) -> bool:
-    """
-    Check if confirmation should be shown for a command.
-    
-    Args:
-        command: The command to check
-        state: Confirmation state
-        
-    Returns:
-        True if confirmation should be displayed
-    """
-    if state is None:
-        state = _global_state
-    
-    return not state.should_execute(command)
 
 
 def confirm_command_ui(

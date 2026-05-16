@@ -39,7 +39,7 @@ def search_web(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "CAWL-Agent/0.2 (local AI agent)"},
+            headers={"User-Agent": "CAWL-Agent/0.3 (local AI agent)"},
         )
         with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")

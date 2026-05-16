@@ -237,18 +237,21 @@ class OllamaClient:
             except json.JSONDecodeError:
                 pass
 
-        # Strategy 2: Standalone JSON objects with 'name' and 'arguments'
-        json_pattern = re.compile(
-            r'\{\s*[\'"]name[\'"]\s*:\s*[\'"].*?[\'"]\s*,\s*[\'"]arguments[\'"]\s*:\s*\{[\s\S]*?\}\s*\}'
-        )
-        match = json_pattern.search(text)
-        if match:
+        # Strategy 2: Find JSON objects with name+arguments using JSONDecoder.raw_decode
+        # for proper nested object support (handles nested dicts in arguments)
+        decoder = json.JSONDecoder()
+        name_pos = text.find('"name"')
+        while name_pos != -1:
+            start = text.rfind('{', 0, name_pos)
+            if start == -1:
+                break
             try:
-                data = json.loads(match.group(0))
-                if "name" in data and "arguments" in data:
-                    return data
+                obj, end = decoder.raw_decode(text, start)
+                if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
+                    return obj
             except json.JSONDecodeError:
                 pass
+            name_pos = text.find('"name"', name_pos + 1)
 
         return None
 

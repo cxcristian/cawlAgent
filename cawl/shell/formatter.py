@@ -13,13 +13,11 @@ class OutputFormatter:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self.compact = False
-        self._token_count = 0
         self._start_time: Optional[float] = None
 
     def start_timer(self):
         """Mark the start of a request."""
         self._start_time = time.monotonic()
-        self._token_count = 0
 
     def elapsed(self) -> str:
         """Return formatted elapsed time."""
@@ -58,11 +56,6 @@ class OutputFormatter:
         preview = output[:200].replace("\n", " ")
         suffix = "..." if len(output) > 200 else ""
         return f"{self._line('ok', f'Result: {tool_name}')}\n{self._indent(preview + suffix)}"
-
-    def stream_token(self, token: str):
-        """Process a streaming token. Returns display string or empty."""
-        self._token_count += 1
-        return token
 
     def format_response(self, text: str) -> str:
         """Format the final LLM response."""

@@ -429,7 +429,8 @@ class OrchestratorAgent:
                             f"[{d}]: {results[d][:300]}" for d in deps if d in results
                         )
 
-                    result = worker.run(st["subtask"] + context, fallback_model=self.model)
+                    subtask_text = str(st.get("subtask", ""))
+                    result = worker.run(subtask_text + context, fallback_model=self.model)
                     results[sid] = result
                     completed.add(sid)
                     pending.remove(st)
