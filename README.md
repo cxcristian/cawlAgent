@@ -172,6 +172,7 @@ executor:
   llm_timeout: 300
   llm_max_retries: 3
   llm_retry_delay: 2
+  temperature: 0.1
   streaming: true
   streaming_throttle_ms: 200
 

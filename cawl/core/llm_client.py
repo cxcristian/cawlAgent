@@ -83,16 +83,22 @@ class OllamaClient:
         except Exception:
             return False
 
+    def _get_llm_options(self) -> dict:
+        """Get LLM options from config."""
+        cfg = get_config()
+        return {
+            "temperature": cfg.get("executor.temperature", 0.1),
+        }
+
     def generate(self, prompt: str, temperature: float = 0.1, stream: bool = False, timeout: int = 300) -> str:
         """Send a prompt to Ollama /api/generate and return the response."""
+        options = self._get_llm_options()
+        options["temperature"] = temperature
         payload = {
             "model": self.model,
             "prompt": prompt,
             "stream": stream,
-            "options": {
-                "temperature": temperature,
-                "num_predict": 8192,
-            },
+            "options": options,
         }
         
         def make_request():
@@ -157,14 +163,13 @@ class OllamaClient:
         Returns:
             The assistant's response text.
         """
+        options = self._get_llm_options()
+        options["temperature"] = temperature
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": stream,
-            "options": {
-                "temperature": temperature,
-                "num_predict": 8192,
-            },
+            "options": options,
         }
         if json_format:
             payload["format"] = "json"
@@ -274,14 +279,13 @@ class OllamaClient:
         Returns:
             Dict with 'content' (text) and 'tool_calls' (list of parsed calls).
         """
+        options = self._get_llm_options()
+        options["temperature"] = temperature
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": stream,
-            "options": {
-                "temperature": temperature,
-                "num_predict": 8192,
-            },
+            "options": options,
         }
         
         def make_request():
